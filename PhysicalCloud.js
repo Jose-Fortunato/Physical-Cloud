@@ -32,7 +32,7 @@ const codigoFinal = Number(Array.from(inputs).map(input => input.value).join('')
 
 inputs.forEach((input, index) => {
     input.addEventListener("keydown", (event) => {
-    input.addEventListener("input", () => {
+   
         
             if (event.key === "Backspace" && input.value.length === 0) {
                 const previousInput = inputs[index - 1];
@@ -42,7 +42,7 @@ inputs.forEach((input, index) => {
         }
             
         
-    });
+   
 });
 });
 document.getElementById("btn-tornar-servidor").addEventListener("click", () => {
