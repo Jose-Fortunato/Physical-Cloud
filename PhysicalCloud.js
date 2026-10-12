@@ -78,9 +78,7 @@ socket.addEventListener("message", (event) => {
         telaDeCodigo.classList.remove("active");
     });
 }
- if (dados.type === "erro"){
-    alert ("Esse não é o código certo.")
- }
+ 
 if (dados.type === "conectado") {
     telaDeConectar.classList.remove("active")
 }
