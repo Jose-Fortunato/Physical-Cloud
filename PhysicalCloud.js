@@ -1,85 +1,111 @@
 const socket = new WebSocket('wss://physical-cloud-server.onrender.com');
+
 const telaDeCodigo = document.getElementById("modal-codigo");
 const codigoTexto = document.getElementById("codigo-texto");
 const fecharModal = document.getElementById("btn-fechar-modal");
 const telaDeConectar = document.getElementById("modal-conectar");
 const fecharModalConectar = document.getElementById("btn-fechar-conectar");
 const inserirCodigo = document.getElementById("inserir-Codigo");
-const inputs = document.querySelectorAll(".code-input-box");
+const inputs = Array.from(document.querySelectorAll(".code-input-box"));
 
+let meuCodigoServidor = null;
+
+// Limpa os 6 campos de input
+function limparInputs() {
+    inputs.forEach(input => { input.value = ""; });
+}
+
+// Envia o código ao servidor quando os 6 campos estiverem preenchidos
+function enviarCodigoSeCompleto() {
+    if (!inputs.every(input => input.value !== "")) return;
+
+    const codigo = inputs.map(input => input.value).join("");
+
+    // Impede conectar ao próprio código
+    if (meuCodigoServidor !== null && codigo === String(meuCodigoServidor)) {
+        alert("Este é o código do seu próprio dispositivo. Digite o código de outro dispositivo.");
+        limparInputs();
+        inputs[0].focus();
+        return;
+    }
+
+    socket.send(JSON.stringify({ type: "conectar", codigo: codigo }));
+}
+
+// Eventos dos inputs: digitar, backspace e colar
 inputs.forEach((input, index) => {
     input.addEventListener("input", () => {
-        
-        if ( Array.from(inputs).every(input => input.value !== "") ) {
-         
-                
-const codigoFinal = Number(Array.from(inputs).map(input => input.value).join(''));
-
-            socket.send(JSON.stringify({ type: 'conectar', codigo: codigoFinal }));
-            
-            console.log(codigoFinal);
-
+        input.value = input.value.replace(/\D/g, "").slice(0, 1);
+        enviarCodigoSeCompleto();
+        if (input.value && index < inputs.length - 1) {
+            inputs[index + 1].focus();
         }
-      
-        if (input.value.length >= input.maxLength) {
-            const nextInput = inputs[index + 1];
-            if (nextInput) {
-                nextInput.focus();
-            }
+    });
+
+    input.addEventListener("keydown", event => {
+        if (event.key === "Backspace" && input.value === "" && index > 0) {
+            inputs[index - 1].focus();
         }
+    });
+
+    input.addEventListener("paste", event => {
+        const colado = (event.clipboardData || window.clipboardData)
+            .getData("text").replace(/\D/g, "").slice(0, 6);
+        if (!colado) return;
+        event.preventDefault();
+        limparInputs();
+        colado.split("").forEach((digito, i) => { if (inputs[i]) inputs[i].value = digito; });
+        enviarCodigoSeCompleto();
     });
 });
 
-inputs.forEach((input, index) => {
-    input.addEventListener("keydown", (event) => {
-   
-            if (event.key === "Backspace" && input.value.length === 0) {
-                const previousInput = inputs[index - 1];
-                if (previousInput) {
-                    previousInput.focus();
-                }
-        }
-            
-        
-   
-});
-});
+// Botão "Se tornar o dispositivo servidor"
 document.getElementById("btn-tornar-servidor").addEventListener("click", () => {
-    socket.send(JSON.stringify({ type: 'tornar-servidor'}));
+    socket.send(JSON.stringify({ type: "tornar-servidor" }));
     telaDeCodigo.classList.remove("active");
-})
-document.getElementById("btn-conectar").addEventListener("click", () => {
-    document.getElementsByClassName("code-input-box")[0].value = "";
-     document.getElementsByClassName("code-input-box")[1].value = "";
-      document.getElementsByClassName("code-input-box")[2].value = "";
-       document.getElementsByClassName("code-input-box")[3].value = "";
-        document.getElementsByClassName("code-input-box")[4].value = "";
-         document.getElementsByClassName("code-input-box")[5].value = "";
-    telaDeConectar.classList.add("active");
-    console.log("Conectar button clicked");
-inserirCodigo.classList.add("code-input-container");
-fecharModalConectar.classList.add("modal-close");
-
-    fecharModalConectar.addEventListener("click", () => {
-    telaDeConectar.classList.remove("active");
-
 });
-    });
 
-socket.addEventListener("message", (event) => {
+// Botão "Conectar dispositivo"
+document.getElementById("btn-conectar").addEventListener("click", () => {
+    limparInputs();
+    telaDeConectar.classList.add("active");
+    inputs[0].focus();
+});
+
+// Fechar modais
+fecharModalConectar.addEventListener("click", () => {
+    telaDeConectar.classList.remove("active");
+    limparInputs();
+});
+
+fecharModal.addEventListener("click", () => {
+    telaDeCodigo.classList.remove("active");
+});
+
+// Receber mensagens do servidor
+socket.addEventListener("message", event => {
     const dados = JSON.parse(event.data);
-    console.log("Mensagem recebida do servidor:", dados);
+    console.log("Mensagem recebida:", dados);
+
     if (dados.type === "codigo-gerado") {
-    telaDeCodigo.classList.add("active");
-    codigoTexto.textContent = dados.codigo;
-    codigoTexto.classList.add("codigo-display");
-    fecharModal.classList.add("modal-close");
-    fecharModal.addEventListener("click", () => {
-        telaDeCodigo.classList.remove("active");
-    });
-}
- 
-if (dados.type === "conectado") {
-    telaDeConectar.classList.remove("active")
-}
+        meuCodigoServidor = String(dados.codigo);
+        codigoTexto.textContent = dados.codigo;
+        telaDeCodigo.classList.add("active");
+    }
+
+    if (dados.type === "conectado") {
+        telaDeConectar.classList.remove("active");
+        limparInputs();
+        alert(dados.mensagem || "Conexão estabelecida com sucesso!");
+    }
+
+    if (dados.type === "erro") {
+        alert(dados.mensagem || "Não foi possível conectar.");
+        limparInputs();
+        inputs[0].focus();
+    }
+
+    if (dados.type === "dispositivo-conectou") {
+        console.log("Outro dispositivo conectou ao seu servidor.");
+    }
 });
