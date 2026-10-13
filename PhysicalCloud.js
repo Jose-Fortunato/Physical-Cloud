@@ -146,6 +146,6 @@ socket.addEventListener("message", event => {
     // Outro dispositivo se conectou a este dispositivo servidor
     if (dados.type === "dispositivo-conectou") {
         console.log("Outro dispositivo conectou ao seu servidor.");
-        // Aqui você pode adicionar lógica para reagir à conexão (ex: atualizar a UI)
+        
     }
 });
