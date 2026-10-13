@@ -41,7 +41,8 @@ function enviarCodigoSeCompleto() {
     if (!inputs.every(input => input.value !== "")) return; // Ainda faltam dígitos
 
     const codigo = inputs.map(input => input.value).join(""); // Junta todos os dígitos em uma string
-
+ console.log("Tentando enviar código:", codigo);
+    console.log("Estado do socket:", socket.readyState);  
     // Impede conectar ao próprio código servidor
                                         // Já recebeu o código string de quando se aperta tornar servidor
     if (meuCodigoServidor !== null && codigo === String(meuCodigoServidor)) {
@@ -53,6 +54,7 @@ function enviarCodigoSeCompleto() {
 
     // Envia a solicitação de conexão para o servidor WebSocket
     socket.send(JSON.stringify({ type: "conectar", codigo: codigo }));
+     console.log("Enviado!");
 }
 
 
