@@ -15,7 +15,11 @@ const inserirCodigo       = document.getElementById("inserir-Codigo");       // 
 // O seletor "input.code-input-box" garante que só elementos <input> sejam incluídos
 /** @type {HTMLInputElement[]} */
 const inputs = Array.from(document.querySelectorAll("input.code-input-box"));
-
+setInterval(() => {
+    if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: "ping" }));
+    }
+}, 240000);
 // Armazena o código do próprio dispositivo quando ele vira servidor.
 // Usado para impedir que o usuário conecte ao próprio código.
 /** @type {string | null} */
