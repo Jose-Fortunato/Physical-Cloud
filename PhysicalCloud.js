@@ -56,8 +56,13 @@ function enviarCodigoSeCompleto() {
     const codigo = inputs.map(input => input.value).join("");
 
     // Bloqueia auto-conexão já no cliente
-   
-
+if (meuCodigoServidor !== null && codigo === meuCodigoServidor) {
+        alert("Você não pode conectar ao próprio dispositivo servidor.");
+        limparInputs();
+        inputs[0].focus();
+        return;
+    }
+    
     if (socket.readyState !== WebSocket.OPEN) {
         alert("O servidor está desconectado. Recarregue a página.");
         return;
