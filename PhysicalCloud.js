@@ -2,12 +2,29 @@
 
 // Abre a conexão WebSocket com o servidor remoto
 const socket = new WebSocket('wss://physical-cloud-server.onrender.com');
+
+// Ping periódico para manter o servidor do Render acordado
+/** @type {ReturnType<typeof setInterval> | null} */
+let pingInterval = null;
+
 socket.addEventListener("open", () => {
-    setInterval(() => {
+    pingInterval = setInterval(() => {
         if (socket.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({ type: "ping" }));
         }
     }, 240000); // 4 minutos
+});
+
+// Se o socket cair, o código gerado deixa de valer no servidor: avisa o usuário
+socket.addEventListener("close", () => {
+    if (pingInterval) clearInterval(pingInterval);
+    meuCodigoServidor = null;
+    telaDeCodigo?.classList.remove("active");
+    alert("Conexão com o servidor perdida. Recarregue a página e gere um novo código.");
+});
+
+socket.addEventListener("error", () => {
+    console.error("Erro no WebSocket.");
 });
 
 // ─── Referências aos elementos HTML ──────────────────────────────────────────
@@ -16,82 +33,84 @@ const codigoTexto         = document.getElementById("codigo-texto");         // 
 const fecharModal         = document.getElementById("btn-fechar-modal");     // Botão de fechar o modal do código
 const telaDeConectar      = document.getElementById("modal-conectar");      // Modal para digitar o código de outro dispositivo
 const fecharModalConectar = document.getElementById("btn-fechar-conectar");  // Botão de fechar o modal de conexão
-const inserirCodigo       = document.getElementById("inserir-Codigo");       // Referência reservada (não usada diretamente)
 
-// Pega todos os inputs de dígito do código (cada caixinha = 1 dígito)
-// O seletor "input.code-input-box" garante que só elementos <input> sejam incluídos
+// Todos os inputs de dígito do código (cada caixinha = 1 dígito)
 /** @type {HTMLInputElement[]} */
 const inputs = Array.from(document.querySelectorAll("input.code-input-box"));
 
-// Armazena o código do próprio dispositivo quando ele vira servidor.
-// Usado para impedir que o usuário conecte ao próprio código.
+// Código do próprio dispositivo quando ele vira servidor (evita auto-conexão)
 /** @type {string | null} */
 let meuCodigoServidor = null;
 
 
 // ─── Utilitários ─────────────────────────────────────────────────────────────
 
-// Limpa todos os campos de input do código
 function limparInputs() {
     inputs.forEach(input => { input.value = ""; });
 }
 
 // Verifica se todos os dígitos foram preenchidos e, se sim, envia o código ao servidor
 function enviarCodigoSeCompleto() {
-    if (!inputs.every(input => input.value !== "")) return; // Ainda faltam dígitos
+    if (!inputs.every(input => input.value !== "")) return;
 
-    const codigo = inputs.map(input => input.value).join(""); // Junta todos os dígitos em uma string
- console.log("Tentando enviar código:", codigo);
-    console.log("Estado do socket:", socket.readyState);  
-    // Impede conectar ao próprio código servidor
-                                        // Já recebeu o código string de quando se aperta tornar servidor
-    if (meuCodigoServidor !== null && codigo === String(meuCodigoServidor)) {
-        alert("Este é o código do seu próprio dispositivo. Digite o código de outro dispositivo.");
+    const codigo = inputs.map(input => input.value).join("");
+
+    // Bloqueia auto-conexão já no cliente
+    if (meuCodigoServidor !== null && codigo === meuCodigoServidor) {
+        alert("Você não pode conectar ao próprio dispositivo servidor.");
         limparInputs();
         inputs[0].focus();
         return;
     }
 
-    // Envia a solicitação de conexão para o servidor WebSocket
+    if (socket.readyState !== WebSocket.OPEN) {
+        alert("O servidor está desconectado. Recarregue a página.");
+        return;
+    }
+
     socket.send(JSON.stringify({ type: "conectar", codigo: codigo }));
-     console.log("Enviado!");
 }
 
 
 // ─── Eventos dos inputs de código ────────────────────────────────────────────
 inputs.forEach((input, index) => {
 
-    // Ao digitar: aceita só números, avança para o próximo campo e verifica se está completo
+    // Ao digitar: só números, avança para o próximo campo e verifica se está completo
     input.addEventListener("input", () => {
-        input.value = input.value.replace(/\D/g, "").slice(0, 1); // Remove não-dígitos e limita a 1 caractere
-        //envia o codigo String pro server ao terminar de colocar os 6 digitos
-        enviarCodigoSeCompleto();
+        input.value = input.value.replace(/\D/g, "").slice(0, 1);
+
         if (input.value && index < inputs.length - 1) {
-            inputs[index + 1].focus(); // Move o foco para o próximo input
+            inputs[index + 1].focus();
         }
+
+        enviarCodigoSeCompleto();
     });
 
-    // Ao pressionar Backspace num campo vazio: volta o foco para o campo anterior
+    // Backspace em campo vazio: volta para o campo anterior
     input.addEventListener("keydown", event => {
         if (event.key === "Backspace" && input.value === "" && index > 0) {
             inputs[index - 1].focus();
         }
     });
 
-    // Ao colar: distribui os dígitos colados entre os inputs e tenta enviar
+    // Ao colar: distribui os dígitos entre os inputs e tenta enviar
     input.addEventListener("paste", event => {
-        // Usa apenas event.clipboardData (padrão moderno); aborta se não estiver disponível
         const clipboardData = event.clipboardData;
         if (!clipboardData) return;
 
-        const colado = clipboardData
-            .getData("text").replace(/\D/g, "").slice(0, 6); // Pega só dígitos, máx 6
+        const colado = clipboardData.getData("text").replace(/\D/g, "").slice(0, 6);
         if (!colado) return;
 
-        event.preventDefault(); // Impede o comportamento padrão de colar
+        event.preventDefault();
         limparInputs();
-        colado.split("").forEach((digito, i) => { if (inputs[i]) inputs[i].value = digito; });
-         //envia o codigo String pro server ao terminar de colocar os 6 digitos
+
+        colado.split("").forEach((digito, i) => {
+            if (inputs[i]) inputs[i].value = digito;
+        });
+
+        const proximoFoco = Math.min(colado.length, inputs.length - 1);
+        inputs[proximoFoco].focus();
+
         enviarCodigoSeCompleto();
     });
 });
@@ -99,27 +118,28 @@ inputs.forEach((input, index) => {
 
 // ─── Botões principais ────────────────────────────────────────────────────────
 
-// Botão "Se tornar o dispositivo servidor": solicita ao servidor um código único
-// O ?. (optional chaining) evita erro caso o elemento não exista no HTML
+// "Se tornar o dispositivo servidor": solicita um código único ao servidor
 document.getElementById("btn-tornar-servidor")?.addEventListener("click", () => {
+    if (socket.readyState !== WebSocket.OPEN) {
+        alert("Servidor desconectado. Recarregue a página.");
+        return;
+    }
     socket.send(JSON.stringify({ type: "tornar-servidor" }));
-    telaDeCodigo?.classList.remove("active"); // Garante que o modal esteja fechado antes do código chegar
+    telaDeCodigo?.classList.remove("active");
 });
 
-// Botão "Conectar dispositivo": abre o modal para digitar o código de outro dispositivo
+// "Conectar dispositivo": abre o modal para digitar o código
 document.getElementById("btn-conectar")?.addEventListener("click", () => {
     limparInputs();
-    telaDeConectar?.classList.add("active"); // Exibe o modal de conexão
-    inputs[0].focus(); // Coloca o foco no primeiro campo
+    telaDeConectar?.classList.add("active");
+    inputs[0].focus();
 });
 
-// Botão fechar modal de conexão
 fecharModalConectar?.addEventListener("click", () => {
     telaDeConectar?.classList.remove("active");
     limparInputs();
 });
 
-// Botão fechar modal do código gerado
 fecharModal?.addEventListener("click", () => {
     telaDeCodigo?.classList.remove("active");
 });
@@ -127,34 +147,34 @@ fecharModal?.addEventListener("click", () => {
 
 // ─── Mensagens recebidas do servidor WebSocket ────────────────────────────────
 socket.addEventListener("message", event => {
-    const dados = JSON.parse(event.data);
+    let dados;
+    try {
+        dados = JSON.parse(event.data);
+    } catch {
+        console.error("Mensagem inválida do servidor:", event.data);
+        return;
+    }
     console.log("Mensagem recebida:", dados);
 
-    // Servidor gerou um código para este dispositivo → exibe no modal
-    // Codigo gerado ao clicar no botão se tonar dispositivo servidor é sempre uma string
     if (dados.type === "codigo-gerado") {
-        meuCodigoServidor = String(dados.codigo);             // Salva para evitar auto-conexão
-        if (codigoTexto) codigoTexto.textContent = String(dados.codigo); // Mostra o código na tela
-        telaDeCodigo?.classList.add("active");                // Abre o modal do código
+        meuCodigoServidor = String(dados.codigo);
+        if (codigoTexto) codigoTexto.textContent = String(dados.codigo);
+        telaDeCodigo?.classList.add("active");
     }
 
-    // Conexão com outro dispositivo foi estabelecida com sucesso
     if (dados.type === "conectado") {
-        telaDeConectar?.classList.remove("active"); // Fecha o modal de conexão
+        telaDeConectar?.classList.remove("active");
         limparInputs();
         alert(dados.mensagem || "Conexão estabelecida com sucesso!");
     }
 
-    // Ocorreu algum erro (código inválido, auto-conexão, etc.)
     if (dados.type === "erro") {
         alert(dados.mensagem || "Não foi possível conectar.");
         limparInputs();
-        inputs[0].focus(); // Volta o foco para o primeiro campo para o usuário tentar de novo
+        inputs[0]?.focus();
     }
 
-    // Outro dispositivo se conectou a este dispositivo servidor
     if (dados.type === "dispositivo-conectou") {
         console.log("Outro dispositivo conectou ao seu servidor.");
-        
     }
 });
