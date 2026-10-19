@@ -157,6 +157,7 @@ body {
   align-items: center;
   justify-content: center;
   z-index: 100;
+  
 }
 
 .modal-overlay.active {
@@ -219,6 +220,8 @@ body {
 
 .code-digit {
   width: 50px;
+  max-width: calc((100% - 40px) / 6);
+  flex: 0 0 auto;
   height: 56px;
   background: #121212;
   border: 1.5px solid #00e676; /* Verde em destaque na borda */
@@ -256,17 +259,15 @@ body {
   margin-bottom: 24px;
 }
 
+/* O código agora é escrito dentro das caixinhas (.code-digit) pelo JavaScript.
+   Este elemento fica só para leitores de tela, escondido visualmente. */
 .codigo-display {
-  font-size: 40px;
-  font-weight: 700;
-  color: #00e676;
-  
-  
-  letter-spacing: 36px; 
-  margin-left: 35px; 
-  margin-bottom: -61px; 
-  position: relative;
-  z-index: 2; 
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 .btn-tornar-servidor {
   position: fixed;

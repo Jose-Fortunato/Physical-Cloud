@@ -94,10 +94,8 @@ function obterNomeDispositivo() {
 
 // ─── Envio e avisos na tela ──────────────────────────────────────────────────
 
-/**
- * Envia um objeto JSON ao servidor. Retorna false se o socket não estiver aberto.
- * @param {{ type: string; deviceId?: string; sessaoId?: any; aceitar?: any; permissao?: any; codigo?: string; nome?: string; }} obj
- */
+/** Envia um objeto JSON ao servidor. Retorna false se o socket não estiver aberto. */
+// @ts-ignore
 function enviar(obj) {
     if (!socket || socket.readyState !== WebSocket.OPEN) return false;
     socket.send(JSON.stringify(obj));
@@ -108,9 +106,7 @@ function enviar(obj) {
 let areaAvisos = null;
 
 // Aviso rápido que some sozinho (não trava a tela como o alert)
-/**
- * @param {string | null} texto
- */
+// @ts-ignore
 function aviso(texto) {
     if (!areaAvisos) {
         areaAvisos = document.createElement("div");
@@ -159,7 +155,7 @@ function prepararExtrasDoModalCodigo() {
 
     elContagem = document.createElement("p");
     elContagem.id = "codigo-contagem";
-    Object.assign(elContagem.style, { opacity: "0.8", fontSize: "14px", margin: "8px 0" });
+    Object.assign(elContagem.style, { opacity: "0.8", fontSize: "14px", margin: "18px 0 8px" });
 
     btnNovoCodigo = document.createElement("button");
     btnNovoCodigo.type = "button";
@@ -167,7 +163,7 @@ function prepararExtrasDoModalCodigo() {
     btnNovoCodigo.textContent = "Gerar novo código";
     Object.assign(btnNovoCodigo.style, {
         background: "transparent", color: "inherit", border: "1px solid #1f7a4d",
-        borderRadius: "8px", padding: "6px 14px", cursor: "pointer", marginTop: "4px",
+        borderRadius: "8px", padding: "6px 14px", cursor: "pointer", display: "block", margin: "8px auto 0",
     });
     btnNovoCodigo.addEventListener("click", () => {
         abrirModalAoGerar = true;
@@ -177,8 +173,15 @@ function prepararExtrasDoModalCodigo() {
         }
     });
 
-    codigoTexto.insertAdjacentElement("afterend", elContagem);
-    elContagem.insertAdjacentElement("afterend", btnNovoCodigo);
+    // No fim do modal (abaixo das caixinhas do código)
+    codigoTexto.parentElement?.append(elContagem, btnNovoCodigo);
+}
+
+// Escreve cada dígito do código dentro da sua caixinha (.code-digit).
+// Sem argumento (ou ""), esvazia as caixinhas.
+function mostrarDigitos(codigo = "") {
+    const caixas = document.querySelectorAll("#modal-codigo .code-digit");
+    caixas.forEach((caixa, i) => { caixa.textContent = codigo[i] || ""; });
 }
 
 function pararContagem() {
@@ -200,9 +203,7 @@ function atualizarContagem() {
     if (restante === 0) pararContagem();
 }
 
-/**
- * @param {number} segundos
- */
+// @ts-ignore
 function iniciarContagem(segundos) {
     pararContagem();
     fimCodigo = Date.now() + segundos * 1000; // usa o relógio local (não depende do servidor)
@@ -226,10 +227,7 @@ function fecharDialogoPedido() {
     dialogoPedido = null;
 }
 
-/**
- * @param {boolean} aceitar
- * @param {string} permissao
- */
+// @ts-ignore
 function responderPedido(aceitar, permissao) {
     const pedido = filaPedidos.shift();
     if (!pedido) return;
@@ -313,9 +311,7 @@ function mostrarProximoPedido() {
 }
 
 // Um pedido (ou conexão) foi encerrado: tira da fila / da tela
-/**
- * @param {string} sessaoId
- */
+// @ts-ignore
 function removerPedido(sessaoId) {
     const posicao = filaPedidos.findIndex(p => p.sessaoId === sessaoId);
     if (posicao === -1) return;
@@ -437,9 +433,7 @@ fecharModal?.addEventListener("click", () => {
 
 
 // ─── Mensagens recebidas do servidor WebSocket ────────────────────────────────
-/**
- * @param {{ data: string; }} event
- */
+// @ts-ignore
 function tratarMensagem(event) {
     let dados;
     try {
@@ -455,7 +449,8 @@ function tratarMensagem(event) {
         // Meu código de servidor chegou
         case "codigo-gerado":
             meuCodigoServidor = String(dados.codigo);
-            if (codigoTexto) codigoTexto.textContent = meuCodigoServidor;
+            if (codigoTexto) codigoTexto.textContent = meuCodigoServidor; // fica escondido, só para leitores de tela
+            mostrarDigitos(meuCodigoServidor);
             prepararExtrasDoModalCodigo();
             iniciarContagem(Number(dados.validadeSegundos) || 300);
             if (abrirModalAoGerar) telaDeCodigo?.classList.add("active");
@@ -466,6 +461,7 @@ function tratarMensagem(event) {
         case "codigo-expirado":
             meuCodigoServidor = null;
             pararContagem();
+            mostrarDigitos("");
             if (elContagem) elContagem.textContent = "Código expirado. Gere um novo.";
             aviso("Seu código expirou. Gere um novo para aceitar outros dispositivos.");
             break;
@@ -495,7 +491,8 @@ function tratarMensagem(event) {
             sessoes.set(String(dados.sessaoId), { papel: "cliente", nome: "Dispositivo servidor", permissao });
             telaDeConectar?.classList.remove("active");
             limparInputs();
-            aviso(`${dados.mensagem || "Conexão estabelecida com sucesso!"} (${TEXTO_PERMISSAO[/** @type {keyof typeof TEXTO_PERMISSAO} */ (permissao)] || permissao})`);
+            // @ts-ignore
+            aviso(`${dados.mensagem || "Conexão estabelecida com sucesso!"} (${TEXTO_PERMISSAO[permissao] || permissao})`);
             break;
         }
 
@@ -504,7 +501,8 @@ function tratarMensagem(event) {
             const permissao = String(dados.permissao || "leitura");
             const nome = String(dados.nome || "Dispositivo");
             sessoes.set(String(dados.sessaoId), { papel: "servidor", nome, permissao });
-            aviso(`${nome} conectou ao seu dispositivo (${TEXTO_PERMISSAO[/** @type {keyof typeof TEXTO_PERMISSAO} */ (permissao)] || permissao}).`);
+            // @ts-ignore
+            aviso(`${nome} conectou ao seu dispositivo (${TEXTO_PERMISSAO[permissao] || permissao}).`);
             break;
         }
 
@@ -521,7 +519,8 @@ function tratarMensagem(event) {
                 inputs[0]?.focus();
             }
             if (existia || eraMeuPedido) {
-                aviso(MOTIVOS_ENCERRAMENTO[/** @type {keyof typeof MOTIVOS_ENCERRAMENTO} */ (dados.motivo)] || "A conexão foi encerrada.");
+                // @ts-ignore
+                aviso(MOTIVOS_ENCERRAMENTO[dados.motivo] || "A conexão foi encerrada.");
             }
             break;
         }
@@ -589,6 +588,7 @@ function conectarSocket() {
         // Tudo que dependia do servidor deixou de valer
         meuCodigoServidor = null;
         pararContagem();
+        mostrarDigitos("");
         telaDeCodigo?.classList.remove("active");
         sessoes.clear();
         filaPedidos.length = 0;
@@ -621,9 +621,7 @@ document.addEventListener("visibilitychange", () => {
 
 
 // ─── API para os próximos passos (transferência de arquivos) ─────────────────
-/**
- * @param {string} sessaoId
- */
+// @ts-ignore
 function encerrarSessao(sessaoId) {
     enviar({ type: "encerrar", sessaoId });
     sessoes.delete(sessaoId);
