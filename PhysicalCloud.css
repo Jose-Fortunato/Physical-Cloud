@@ -138,6 +138,30 @@ body {
   opacity: 0.85;
 }
 
+.secondary-btn {
+  background: transparent;
+  color: var(--text-main);
+  border: 1px solid #3a3a3a;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.secondary-btn:hover {
+  border-color: #666;
+}
+
+/* ─── Barra de ações acima da lista ──────────────────────────────────────────── */
+
+.device-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 16px;
+}
+
 /* ─── Lista de dispositivos ─────────────────────────────────────────────────── */
 
 .device-list {

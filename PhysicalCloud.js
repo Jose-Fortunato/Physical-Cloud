@@ -128,6 +128,7 @@ const TEXTO_PERMISSAO = {
 
 const listaDispositivos = document.getElementById("lista-dispositivos");
 const emptyDispositivos = document.getElementById("empty-dispositivos");
+const deviceActions     = document.getElementById("device-actions");
 
 function atualizarListaDispositivos() {
     if (!listaDispositivos || !emptyDispositivos) return;
@@ -137,11 +138,13 @@ function atualizarListaDispositivos() {
     if (sessoes.size === 0) {
         emptyDispositivos.style.display = "";
         listaDispositivos.style.display = "none";
+        if (deviceActions) deviceActions.style.display = "none";
         return;
     }
 
     emptyDispositivos.style.display = "none";
     listaDispositivos.style.display = "";
+    if (deviceActions) deviceActions.style.display = "";
 
     for (const [sessaoId, s] of sessoes) {
         const card = document.createElement("div");
@@ -183,6 +186,15 @@ function atualizarListaDispositivos() {
         card.append(icone, info, badge, btnEncerrar);
         listaDispositivos.appendChild(card);
     }
+}
+
+
+// ─── Abrir modal de conectar ──────────────────────────────────────────────────
+
+function abrirModalConectar() {
+    limparInputs();
+    telaDeConectar?.classList.add("active");
+    inputs[0]?.focus();
 }
 
 
@@ -460,11 +472,8 @@ document.getElementById("btn-tornar-servidor")?.addEventListener("click", () => 
     telaDeCodigo?.classList.remove("active");
 });
 
-document.getElementById("btn-conectar")?.addEventListener("click", () => {
-    limparInputs();
-    telaDeConectar?.classList.add("active");
-    inputs[0]?.focus();
-});
+document.getElementById("btn-conectar")?.addEventListener("click", abrirModalConectar);
+document.getElementById("btn-conectar-extra")?.addEventListener("click", abrirModalConectar);
 
 fecharModalConectar?.addEventListener("click", () => {
     telaDeConectar?.classList.remove("active");
@@ -576,7 +585,6 @@ function tratarMensagem(event) {
             window.dispatchEvent(new CustomEvent("physicalcloud:sinal", { detail: dados }));
             break;
 
-        // Bug #4 corrigido: usa aviso() em vez de alert()
         case "erro":
             aguardandoAprovacao = false;
             sessaoAguardando = null;
@@ -636,7 +644,6 @@ function conectarSocket() {
         mostrarDigitos("");
         telaDeCodigo?.classList.remove("active");
 
-        // Limpa sessões na desconexão
         sessoes.clear();
         atualizarListaDispositivos();
 
