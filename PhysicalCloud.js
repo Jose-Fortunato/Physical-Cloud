@@ -1,44 +1,30 @@
 // @ts-check
 
 const URL_SERVIDOR = "wss://physical-cloud-server.onrender.com";
-const TEMPO_PEDIDO_S = 60; // o servidor expira pedidos sem resposta em 60s
+const TEMPO_PEDIDO_S = 60;
 
-// ─── Referências aos elementos HTML ──────────────────────────────────────────
-const telaDeCodigo        = document.getElementById("modal-codigo");        // Modal que mostra o código gerado
-const codigoTexto         = document.getElementById("codigo-texto");         // Elemento onde o código é exibido
-const fecharModal         = document.getElementById("btn-fechar-modal");     // Botão de fechar o modal do código
-const telaDeConectar      = document.getElementById("modal-conectar");      // Modal para digitar o código de outro dispositivo
-const fecharModalConectar = document.getElementById("btn-fechar-conectar");  // Botão de fechar o modal de conexão
+const telaDeCodigo        = document.getElementById("modal-codigo");
+const codigoTexto         = document.getElementById("codigo-texto");
+const fecharModal         = document.getElementById("btn-fechar-modal");
+const telaDeConectar      = document.getElementById("modal-conectar");
+const fecharModalConectar = document.getElementById("btn-fechar-conectar");
 
-// Todos os inputs de dígito do código (cada caixinha = 1 dígito)
 /** @type {HTMLInputElement[]} */
 const inputs = Array.from(document.querySelectorAll("input.code-input-box"));
-
-
-// ─── Estado ──────────────────────────────────────────────────────────────────
 
 /** @type {WebSocket | null} */
 let socket = null;
 
-// Código do próprio dispositivo quando ele vira servidor (evita auto-conexão)
 /** @type {string | null} */
 let meuCodigoServidor = null;
 
-// true depois que o usuário clica em "Se tornar o dispositivo servidor".
-// Serve para pedir um código novo sozinho se a conexão cair e voltar
-// (o servidor esquece tudo quando reinicia).
 let souServidor = false;
-
-// Se o modal do código deve abrir quando o código chegar
 let abrirModalAoGerar = false;
-
-// true enquanto espero o dispositivo servidor aprovar meu pedido
 let aguardandoAprovacao = false;
+
 /** @type {string | null} */
 let sessaoAguardando = null;
 
-// Conexões ativas: sessaoId → { papel: "servidor" | "cliente", nome, permissao }
-// "servidor" = alguém está conectado a MIM; "cliente" = eu estou conectado a alguém
 /** @type {Map<string, {papel: string, nome: string, permissao: string}>} */
 const sessoes = new Map();
 
@@ -51,9 +37,6 @@ let reconectando = false;
 
 
 // ─── Identificação do dispositivo ────────────────────────────────────────────
-// O deviceId é gerado uma vez e guardado no navegador. O servidor usa isso para
-// impedir que um dispositivo conecte no próprio código (mesmo em outra aba).
-// Obs.: navegadores diferentes no mesmo aparelho têm IDs diferentes.
 
 /** @type {string | null} */
 let deviceIdMemoria = null;
@@ -80,7 +63,6 @@ function obterDeviceId() {
     return id;
 }
 
-// Nome que aparece para o outro lado no pedido de conexão
 function obterNomeDispositivo() {
     const ua = navigator.userAgent;
     if (/Android/i.test(ua)) return "Celular Android";
@@ -94,8 +76,9 @@ function obterNomeDispositivo() {
 
 // ─── Envio e avisos na tela ──────────────────────────────────────────────────
 
-/** Envia um objeto JSON ao servidor. Retorna false se o socket não estiver aberto. */
-// @ts-ignore
+/**
+ * @param {{ type: string; deviceId?: string; sessaoId?: any; aceitar?: any; permissao?: any; codigo?: string; nome?: string; }} obj
+ */
 function enviar(obj) {
     if (!socket || socket.readyState !== WebSocket.OPEN) return false;
     socket.send(JSON.stringify(obj));
@@ -105,8 +88,9 @@ function enviar(obj) {
 /** @type {HTMLElement | null} */
 let areaAvisos = null;
 
-// Aviso rápido que some sozinho (não trava a tela como o alert)
-// @ts-ignore
+/**
+ * @param {string | null} texto
+ */
 function aviso(texto) {
     if (!areaAvisos) {
         areaAvisos = document.createElement("div");
@@ -118,7 +102,7 @@ function aviso(texto) {
         document.body.appendChild(areaAvisos);
     }
     const el = document.createElement("div");
-    el.textContent = texto; // textContent: nunca interpreta HTML
+    el.textContent = texto;
     Object.assign(el.style, {
         background: "#1b1b1b", color: "#fff", border: "1px solid #1f7a4d",
         borderRadius: "10px", padding: "10px 16px", fontSize: "14px", textAlign: "center",
@@ -140,7 +124,86 @@ const TEXTO_PERMISSAO = {
 };
 
 
-// ─── Contagem regressiva do código (modal do código) ─────────────────────────
+// ─── Lista de dispositivos ────────────────────────────────────────────────────
+
+const listaDispositivos = document.getElementById("lista-dispositivos");
+const emptyDispositivos = document.getElementById("empty-dispositivos");
+
+function atualizarListaDispositivos() {
+    if (!listaDispositivos || !emptyDispositivos) return;
+
+    listaDispositivos.innerHTML = "";
+
+    if (sessoes.size === 0) {
+        emptyDispositivos.style.display = "";
+        listaDispositivos.style.display = "none";
+        return;
+    }
+
+    emptyDispositivos.style.display = "none";
+    listaDispositivos.style.display = "";
+
+    for (const [sessaoId, s] of sessoes) {
+        const card = document.createElement("div");
+        card.className = "device-card";
+        card.dataset.sessaoId = sessaoId;
+
+        const icone = document.createElement("div");
+        icone.className = "device-icon";
+        icone.textContent = s.papel === "servidor" ? "💻" : "📱";
+
+        const info = document.createElement("div");
+        info.className = "device-info";
+
+        const nome = document.createElement("span");
+        nome.className = "device-name";
+        nome.textContent = s.nome;
+
+        const detalhes = document.createElement("span");
+        detalhes.className = "device-details";
+        // @ts-ignore
+        const permissaoTexto = TEXTO_PERMISSAO[s.permissao] || s.permissao;
+        detalhes.textContent = s.papel === "servidor"
+            ? `Conectado a você · ${permissaoTexto}`
+            : `Você conectado · ${permissaoTexto}`;
+
+        info.append(nome, detalhes);
+
+        const badge = document.createElement("span");
+        badge.className = "device-badge device-badge--online";
+        badge.textContent = "Online";
+
+        const btnEncerrar = document.createElement("button");
+        btnEncerrar.className = "device-btn-encerrar";
+        btnEncerrar.textContent = "Desconectar";
+        btnEncerrar.addEventListener("click", () => {
+            encerrarSessao(sessaoId);
+        });
+
+        card.append(icone, info, badge, btnEncerrar);
+        listaDispositivos.appendChild(card);
+    }
+}
+
+
+// ─── Tabs ─────────────────────────────────────────────────────────────────────
+
+document.querySelectorAll(".nav-item[data-tab]").forEach(btn => {
+    btn.addEventListener("click", () => {
+        const alvo = /** @type {HTMLElement} */ (btn).dataset.tab;
+        if (!alvo) return;
+
+        document.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
+        document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+
+        btn.classList.add("active");
+        document.getElementById(alvo)?.classList.add("active");
+    });
+});
+
+
+// ─── Contagem regressiva do código ───────────────────────────────────────────
+
 /** @type {HTMLElement | null} */
 let elContagem = null;
 /** @type {HTMLButtonElement | null} */
@@ -149,7 +212,6 @@ let fimCodigo = 0;
 /** @type {ReturnType<typeof setInterval> | null} */
 let timerCodigo = null;
 
-// Cria (uma vez) a contagem e o botão "Gerar novo código" dentro do modal do código
 function prepararExtrasDoModalCodigo() {
     if (!codigoTexto || elContagem) return;
 
@@ -173,12 +235,9 @@ function prepararExtrasDoModalCodigo() {
         }
     });
 
-    // No fim do modal (abaixo das caixinhas do código)
     codigoTexto.parentElement?.append(elContagem, btnNovoCodigo);
 }
 
-// Escreve cada dígito do código dentro da sua caixinha (.code-digit).
-// Sem argumento (ou ""), esvazia as caixinhas.
 function mostrarDigitos(codigo = "") {
     const caixas = document.querySelectorAll("#modal-codigo .code-digit");
     caixas.forEach((caixa, i) => { caixa.textContent = codigo[i] || ""; });
@@ -203,16 +262,19 @@ function atualizarContagem() {
     if (restante === 0) pararContagem();
 }
 
-// @ts-ignore
+/**
+ * @param {number} segundos
+ */
 function iniciarContagem(segundos) {
     pararContagem();
-    fimCodigo = Date.now() + segundos * 1000; // usa o relógio local (não depende do servidor)
+    fimCodigo = Date.now() + segundos * 1000;
     atualizarContagem();
     timerCodigo = setInterval(atualizarContagem, 1000);
 }
 
 
-// ─── Pedidos de conexão (aprovação no dispositivo servidor) ──────────────────
+// ─── Pedidos de conexão ───────────────────────────────────────────────────────
+
 /** @type {{sessaoId: string, nome: string, chegouEm: number}[]} */
 const filaPedidos = [];
 /** @type {HTMLElement | null} */
@@ -227,7 +289,10 @@ function fecharDialogoPedido() {
     dialogoPedido = null;
 }
 
-// @ts-ignore
+/**
+ * @param {boolean} aceitar
+ * @param {string} permissao
+ */
 function responderPedido(aceitar, permissao) {
     const pedido = filaPedidos.shift();
     if (!pedido) return;
@@ -236,7 +301,6 @@ function responderPedido(aceitar, permissao) {
     mostrarProximoPedido();
 }
 
-// Mostra um pedido por vez. Os outros esperam na fila.
 function mostrarProximoPedido() {
     if (dialogoPedido) return;
     const pedido = filaPedidos[0];
@@ -310,8 +374,9 @@ function mostrarProximoPedido() {
     timerPedido = setInterval(atualizar, 1000);
 }
 
-// Um pedido (ou conexão) foi encerrado: tira da fila / da tela
-// @ts-ignore
+/**
+ * @param {string} sessaoId
+ */
 function removerPedido(sessaoId) {
     const posicao = filaPedidos.findIndex(p => p.sessaoId === sessaoId);
     if (posicao === -1) return;
@@ -324,22 +389,20 @@ function removerPedido(sessaoId) {
 }
 
 
-// ─── Utilitários dos inputs ──────────────────────────────────────────────────
+// ─── Inputs do código ─────────────────────────────────────────────────────────
 
 function limparInputs() {
     inputs.forEach(input => { input.value = ""; });
 }
 
-// Verifica se todos os dígitos foram preenchidos e, se sim, envia o código ao servidor
 function enviarCodigoSeCompleto() {
     if (!inputs.every(input => input.value !== "")) return;
-    if (aguardandoAprovacao) return; // já tem um pedido esperando resposta
+    if (aguardandoAprovacao) return;
 
     const codigo = inputs.map(input => input.value).join("");
 
-    // Bloqueia auto-conexão já no cliente
     if (meuCodigoServidor !== null && codigo === meuCodigoServidor) {
-        alert("Você não pode conectar ao próprio dispositivo servidor.");
+        aviso("Você não pode conectar ao próprio dispositivo servidor.");
         limparInputs();
         inputs[0].focus();
         return;
@@ -352,50 +415,33 @@ function enviarCodigoSeCompleto() {
         nome: obterNomeDispositivo(),
     });
     if (!enviado) {
-        alert("O servidor está desconectado. Aguarde a reconexão e tente de novo.");
+        aviso("O servidor está desconectado. Aguarde a reconexão e tente de novo.");
     }
 }
 
-
-// ─── Eventos dos inputs de código ────────────────────────────────────────────
 inputs.forEach((input, index) => {
-
-    // Ao digitar: só números, avança para o próximo campo e verifica se está completo
     input.addEventListener("input", () => {
         input.value = input.value.replace(/\D/g, "").slice(0, 1);
-
-        if (input.value && index < inputs.length - 1) {
-            inputs[index + 1].focus();
-        }
-
+        if (input.value && index < inputs.length - 1) inputs[index + 1].focus();
         enviarCodigoSeCompleto();
     });
 
-    // Backspace em campo vazio: volta para o campo anterior
     input.addEventListener("keydown", event => {
         if (event.key === "Backspace" && input.value === "" && index > 0) {
             inputs[index - 1].focus();
         }
     });
 
-    // Ao colar: distribui os dígitos entre os inputs e tenta enviar
     input.addEventListener("paste", event => {
         const clipboardData = event.clipboardData;
         if (!clipboardData) return;
-
         const colado = clipboardData.getData("text").replace(/\D/g, "").slice(0, 6);
         if (!colado) return;
-
         event.preventDefault();
         limparInputs();
-
-        colado.split("").forEach((digito, i) => {
-            if (inputs[i]) inputs[i].value = digito;
-        });
-
+        colado.split("").forEach((digito, i) => { if (inputs[i]) inputs[i].value = digito; });
         const proximoFoco = Math.min(colado.length, inputs.length - 1);
         inputs[proximoFoco].focus();
-
         enviarCodigoSeCompleto();
     });
 });
@@ -403,7 +449,6 @@ inputs.forEach((input, index) => {
 
 // ─── Botões principais ────────────────────────────────────────────────────────
 
-// "Se tornar o dispositivo servidor": solicita um código ao servidor
 document.getElementById("btn-tornar-servidor")?.addEventListener("click", () => {
     abrirModalAoGerar = true;
     if (!enviar({ type: "tornar-servidor", deviceId: obterDeviceId() })) {
@@ -412,10 +457,9 @@ document.getElementById("btn-tornar-servidor")?.addEventListener("click", () => 
         return;
     }
     souServidor = true;
-    telaDeCodigo?.classList.remove("active"); // fecha o modal antigo até o código novo chegar
+    telaDeCodigo?.classList.remove("active");
 });
 
-// "Conectar dispositivo": abre o modal para digitar o código
 document.getElementById("btn-conectar")?.addEventListener("click", () => {
     limparInputs();
     telaDeConectar?.classList.add("active");
@@ -431,9 +475,16 @@ fecharModal?.addEventListener("click", () => {
     telaDeCodigo?.classList.remove("active");
 });
 
+document.getElementById("btn-enviar")?.addEventListener("click", () => {
+    aviso("Transferência de arquivos será implementada na próxima etapa.");
+});
+
 
 // ─── Mensagens recebidas do servidor WebSocket ────────────────────────────────
-// @ts-ignore
+
+/**
+ * @param {{ data: string; }} event
+ */
 function tratarMensagem(event) {
     let dados;
     try {
@@ -446,10 +497,9 @@ function tratarMensagem(event) {
 
     switch (dados.type) {
 
-        // Meu código de servidor chegou
         case "codigo-gerado":
             meuCodigoServidor = String(dados.codigo);
-            if (codigoTexto) codigoTexto.textContent = meuCodigoServidor; // fica escondido, só para leitores de tela
+            if (codigoTexto) codigoTexto.textContent = meuCodigoServidor;
             mostrarDigitos(meuCodigoServidor);
             prepararExtrasDoModalCodigo();
             iniciarContagem(Number(dados.validadeSegundos) || 300);
@@ -457,7 +507,6 @@ function tratarMensagem(event) {
             abrirModalAoGerar = false;
             break;
 
-        // O código venceu (quem já estava conectado continua conectado)
         case "codigo-expirado":
             meuCodigoServidor = null;
             pararContagem();
@@ -466,14 +515,12 @@ function tratarMensagem(event) {
             aviso("Seu código expirou. Gere um novo para aceitar outros dispositivos.");
             break;
 
-        // Meu pedido foi enviado; agora o dispositivo servidor decide
         case "aguardando-aprovacao":
             aguardandoAprovacao = true;
             sessaoAguardando = String(dados.sessaoId);
             aviso("Pedido enviado. Aguarde o outro dispositivo aprovar…");
             break;
 
-        // Alguém quer conectar em MIM: pergunta se eu permito
         case "pedido-conexao":
             filaPedidos.push({
                 sessaoId: String(dados.sessaoId),
@@ -483,7 +530,6 @@ function tratarMensagem(event) {
             mostrarProximoPedido();
             break;
 
-        // Meu pedido foi aprovado
         case "conectado": {
             aguardandoAprovacao = false;
             sessaoAguardando = null;
@@ -493,20 +539,20 @@ function tratarMensagem(event) {
             limparInputs();
             // @ts-ignore
             aviso(`${dados.mensagem || "Conexão estabelecida com sucesso!"} (${TEXTO_PERMISSAO[permissao] || permissao})`);
+            atualizarListaDispositivos();
             break;
         }
 
-        // Aprovei alguém e a conexão foi concluída
         case "dispositivo-conectou": {
             const permissao = String(dados.permissao || "leitura");
             const nome = String(dados.nome || "Dispositivo");
             sessoes.set(String(dados.sessaoId), { papel: "servidor", nome, permissao });
             // @ts-ignore
             aviso(`${nome} conectou ao seu dispositivo (${TEXTO_PERMISSAO[permissao] || permissao}).`);
+            atualizarListaDispositivos();
             break;
         }
 
-        // Conexão ou pedido terminou (recusa, expiração, queda, desconexão)
         case "sessao-encerrada": {
             const id = String(dados.sessaoId);
             removerPedido(id);
@@ -522,18 +568,19 @@ function tratarMensagem(event) {
                 // @ts-ignore
                 aviso(MOTIVOS_ENCERRAMENTO[dados.motivo] || "A conexão foi encerrada.");
             }
+            atualizarListaDispositivos();
             break;
         }
 
-        // Mensagens de ligação (WebRTC). A transferência de arquivos (Dia 3) escuta este evento.
         case "sinal":
             window.dispatchEvent(new CustomEvent("physicalcloud:sinal", { detail: dados }));
             break;
 
+        // Bug #4 corrigido: usa aviso() em vez de alert()
         case "erro":
             aguardandoAprovacao = false;
             sessaoAguardando = null;
-            alert(dados.mensagem || "Não foi possível conectar.");
+            aviso(dados.mensagem || "Não foi possível conectar.");
             limparInputs();
             inputs[0]?.focus();
             break;
@@ -544,7 +591,8 @@ function tratarMensagem(event) {
 }
 
 
-// ─── Conexão com o servidor (com reconexão automática) ───────────────────────
+// ─── Conexão WebSocket (com reconexão automática) ─────────────────────────────
+
 function conectarSocket() {
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
     if (timerReconexao) clearTimeout(timerReconexao);
@@ -556,17 +604,15 @@ function conectarSocket() {
     ws.addEventListener("open", () => {
         tentativasReconexao = 0;
 
-        // Ping periódico para manter o servidor do Render acordado
         pingInterval = setInterval(() => {
             if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
-        }, 240000); // 4 minutos
+        }, 240000);
 
         if (reconectando) {
             reconectando = false;
             aviso("Reconectado ao servidor.");
         }
 
-        // O servidor esqueceu meu código: peço um novo, sem abrir o modal sozinho
         if (souServidor) {
             abrirModalAoGerar = false;
             enviar({ type: "tornar-servidor", deviceId: obterDeviceId() });
@@ -580,23 +626,25 @@ function conectarSocket() {
     });
 
     ws.addEventListener("close", event => {
-        if (socket !== ws) return; // evento de um socket antigo
+        if (socket !== ws) return;
 
         if (pingInterval) clearInterval(pingInterval);
         pingInterval = null;
 
-        // Tudo que dependia do servidor deixou de valer
         meuCodigoServidor = null;
         pararContagem();
         mostrarDigitos("");
         telaDeCodigo?.classList.remove("active");
+
+        // Limpa sessões na desconexão
         sessoes.clear();
+        atualizarListaDispositivos();
+
         filaPedidos.length = 0;
         fecharDialogoPedido();
         aguardandoAprovacao = false;
         sessaoAguardando = null;
 
-        // Tenta reconectar: 1s, 2s, 4s, 8s... no máximo 15s (30s se o servidor recusou)
         const recusado = event.code === 1008;
         const espera = recusado ? 30000 : Math.min(1000 * 2 ** tentativasReconexao, 15000);
         if (tentativasReconexao === 0 || recusado) {
@@ -610,7 +658,6 @@ function conectarSocket() {
     });
 }
 
-// Ao voltar para a aba (comum no celular), reconecta na hora se tiver caído
 document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") return;
     if (socket && socket.readyState !== WebSocket.CLOSED) return;
@@ -620,11 +667,15 @@ document.addEventListener("visibilitychange", () => {
 });
 
 
-// ─── API para os próximos passos (transferência de arquivos) ─────────────────
-// @ts-ignore
+// ─── API para etapas futuras (WebRTC) ─────────────────────────────────────────
+
+/**
+ * @param {string} sessaoId
+ */
 function encerrarSessao(sessaoId) {
     enviar({ type: "encerrar", sessaoId });
     sessoes.delete(sessaoId);
+    atualizarListaDispositivos();
 }
 
 /** @type {any} */ (window).PhysicalCloud = { enviar, sessoes, obterDeviceId, encerrarSessao };
