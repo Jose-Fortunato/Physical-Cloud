@@ -1,14 +1,9 @@
 :root {
-  /* Tons de preto usados no site */
-  --bg-main: #0a0a0a;      /* fundo geral das telas */
-  --bg-sidebar: #161616;   /* painel lateral, um pouco mais claro */
-  --bg-hover: #222222;     /* hover em itens da sidebar */
-
-  /* Texto */
+  --bg-main: #0a0a0a;
+  --bg-sidebar: #161616;
+  --bg-hover: #222222;
   --text-main: #ffffff;
   --text-muted: #9a9a9a;
-
-  /* Cor de destaque (troque aqui entre laranja e verde neon) */
   --accent: #39ff8f;
 }
 
@@ -29,7 +24,6 @@ body {
   min-height: 100vh;
 }
 
-/* Painel lateral */
 .sidebar {
   width: 240px;
   background: var(--bg-sidebar);
@@ -91,7 +85,6 @@ body {
   border-left: 2px solid var(--accent);
 }
 
-/* Área de conteúdo */
 .content {
   flex: 1;
   padding: 40px;
@@ -108,7 +101,6 @@ body {
   margin-bottom: 32px;
 }
 
-/* Só uma tela fica visível por vez */
 .tab-panel {
   display: none;
 }
@@ -117,7 +109,6 @@ body {
   display: block;
 }
 
-/* Estado vazio (sem dispositivos / sem arquivos ainda) */
 .empty-state {
   border: 1px dashed var(--bg-hover);
   border-radius: 10px;
@@ -146,6 +137,88 @@ body {
 .primary-btn:hover {
   opacity: 0.85;
 }
+
+/* ─── Lista de dispositivos ─────────────────────────────────────────────────── */
+
+.device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.device-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--bg-sidebar);
+  border: 1px solid #2a2a2a;
+  border-radius: 10px;
+  padding: 16px 18px;
+  transition: border-color 0.15s ease;
+}
+
+.device-card:hover {
+  border-color: #3a3a3a;
+}
+
+.device-icon {
+  font-size: 22px;
+  flex-shrink: 0;
+}
+
+.device-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+
+.device-name {
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.device-details {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.device-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.device-badge--online {
+  background: rgba(57, 255, 143, 0.12);
+  color: var(--accent);
+}
+
+.device-btn-encerrar {
+  background: transparent;
+  border: 1px solid #3a3a3a;
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.device-btn-encerrar:hover {
+  border-color: #666;
+  color: var(--text-main);
+}
+
+/* ─── Modais ─────────────────────────────────────────────────────────────────── */
+
 .modal-overlay {
   display: none;
   position: fixed;
@@ -157,7 +230,6 @@ body {
   align-items: center;
   justify-content: center;
   z-index: 100;
-  
 }
 
 .modal-overlay.active {
@@ -166,17 +238,16 @@ body {
 
 .modal-box {
   background: #1c1c1c;
-  border: 1px solid #2d2d2d; /* Borda sutil e válida */
+  border: 1px solid #2d2d2d;
   border-radius: 16px;
-  padding: 36px 32px; /* Reduzido de 70px para dar proporção retangular harmoniosa */
-  max-width: 480px; /* Um pouco mais largo para acomodar bem os elementos */
+  padding: 36px 32px;
+  max-width: 480px;
   width: 90%;
   text-align: center;
   position: relative;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6); /* Sombra para afastar do fundo */
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
 }
 
-/* Título e Subtítulo */
 .modal-box h2 {
   font-size: 22px;
   font-weight: 700;
@@ -188,11 +259,10 @@ body {
 .modal-box .subtitle {
   font-size: 14px;
   font-weight: 400;
-  color: #a0a0a0; /* Tom cinza claro para leitura confortável */
+  color: #a0a0a0;
   margin-bottom: 28px;
 }
 
-/* Botão Fechar (&times;) */
 .close-btn {
   position: absolute;
   top: 16px;
@@ -209,7 +279,6 @@ body {
   color: #ffffff;
 }
 
-/* Quadradinhos do Código (OTP style) */
 .code-container {
   display: flex;
   align-items: center;
@@ -224,15 +293,15 @@ body {
   flex: 0 0 auto;
   height: 56px;
   background: #121212;
-  border: 1.5px solid #00e676; /* Verde em destaque na borda */
+  border: 1.5px solid #00e676;
   border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 24px;
   font-weight: 700;
-  color: #00e676; /* Verde do texto */
-  box-shadow: 0 4px 12px rgba(0, 230, 118, 0.15); /* Glow sutil verde */
+  color: #00e676;
+  box-shadow: 0 4px 12px rgba(0, 230, 118, 0.15);
 }
 
 .code-divider {
@@ -259,8 +328,6 @@ body {
   margin-bottom: 24px;
 }
 
-/* O código agora é escrito dentro das caixinhas (.code-digit) pelo JavaScript.
-   Este elemento fica só para leitores de tela, escondido visualmente. */
 .codigo-display {
   position: absolute;
   width: 1px;
@@ -269,6 +336,9 @@ body {
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+/* ─── FAB tornar-servidor ────────────────────────────────────────────────────── */
+
 .btn-tornar-servidor {
   position: fixed;
   bottom: 24px;
@@ -288,6 +358,9 @@ body {
 .btn-tornar-servidor:hover {
   opacity: 0.85;
 }
+
+/* ─── Inputs de código ───────────────────────────────────────────────────────── */
+
 .code-input-container {
   display: flex;
   align-items: center;

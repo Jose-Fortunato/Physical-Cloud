@@ -24,54 +24,55 @@
       </nav>
     </aside>
 
-   
     <main class="content">
 
-      
       <section id="dispositivos" class="tab-panel active">
         <h1>Dispositivos conectados</h1>
         <p class="subtitle">Conecte um celular, computador ou notebook para começar a trocar arquivos.</p>
 
-        <div class="empty-state">
+        <div class="empty-state" id="empty-dispositivos">
           <p>Nenhum dispositivo conectado ainda.</p>
           <button class="primary-btn" id="btn-conectar">Conectar dispositivo</button>
         </div>
-        <div class="modal-overlay" id="modal-codigo">
-  <div class="modal-box">
-    <button class="modal-close" id="btn-fechar-modal">&times;</button>
-    <h2>Seu dispositivo virou o servidor</h2>
-    <p class="subtitle">Use este código no outro dispositivo para conectar:</p>
-    <div class="codigo-display" id="codigo-texto">------</div>
-    <div class="code-container">
-    <div class="code-digit"></div>
-    <div class="code-digit"></div>
-    <div class="code-digit"></div>
-    <div class="code-digit"></div>
-    <div class="code-digit"></div>
-    <div class="code-digit"></div>
-  </div>
 
-  </div>
-</div>
-<div class="modal-overlay" id="modal-conectar">
-  <div class="modal-box">
-    <button class="modal-close" id="btn-fechar-conectar">&times;</button>
-    <h2>Conectar a um dispositivo</h2>
-    <p class="modal-subtitle">Digite o código do dispositivo servidor:</p>
-    <div class="code-input-container" id="inserir-Codigo">
-      <input type="text" maxlength="1" class="code-input-box" data-index="0">
-      <input type="text" maxlength="1" class="code-input-box" data-index="1">
-      <input type="text" maxlength="1" class="code-input-box" data-index="2">
-      <input type="text" maxlength="1" class="code-input-box" data-index="3">
-      <input type="text" maxlength="1" class="code-input-box" data-index="4">
-      <input type="text" maxlength="1" class="code-input-box" data-index="5">
-    </div>
-  </div>
-</div>
-<button class="btn-tornar-servidor" id="btn-tornar-servidor">Se tornar o dispositivo servidor</button>
+        <div class="device-list" id="lista-dispositivos" style="display:none"></div>
+
+        <div class="modal-overlay" id="modal-codigo">
+          <div class="modal-box">
+            <button class="modal-close" id="btn-fechar-modal">&times;</button>
+            <h2>Seu dispositivo virou o servidor</h2>
+            <p class="subtitle">Use este código no outro dispositivo para conectar:</p>
+            <div class="codigo-display" id="codigo-texto">------</div>
+            <div class="code-container">
+              <div class="code-digit"></div>
+              <div class="code-digit"></div>
+              <div class="code-digit"></div>
+              <div class="code-digit"></div>
+              <div class="code-digit"></div>
+              <div class="code-digit"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-overlay" id="modal-conectar">
+          <div class="modal-box">
+            <button class="modal-close" id="btn-fechar-conectar">&times;</button>
+            <h2>Conectar a um dispositivo</h2>
+            <p class="modal-subtitle">Digite o código do dispositivo servidor:</p>
+            <div class="code-input-container" id="inserir-Codigo">
+              <input type="text" maxlength="1" class="code-input-box" data-index="0">
+              <input type="text" maxlength="1" class="code-input-box" data-index="1">
+              <input type="text" maxlength="1" class="code-input-box" data-index="2">
+              <input type="text" maxlength="1" class="code-input-box" data-index="3">
+              <input type="text" maxlength="1" class="code-input-box" data-index="4">
+              <input type="text" maxlength="1" class="code-input-box" data-index="5">
+            </div>
+          </div>
+        </div>
+
+        <button class="btn-tornar-servidor" id="btn-tornar-servidor">Se tornar o dispositivo servidor</button>
       </section>
 
-      
       <section id="nuvem" class="tab-panel">
         <h1>Nuvem</h1>
         <p class="subtitle">Seus arquivos enviados aparecem aqui.</p>
