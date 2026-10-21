@@ -36,41 +36,6 @@
         </div>
 
         <div class="device-list" id="lista-dispositivos" style="display:none"></div>
-
-        <div class="modal-overlay" id="modal-codigo">
-          <div class="modal-box">
-            <button class="modal-close" id="btn-fechar-modal">&times;</button>
-            <h2>Seu dispositivo virou o servidor</h2>
-            <p class="subtitle">Use este código no outro dispositivo para conectar:</p>
-            <div class="codigo-display" id="codigo-texto">------</div>
-            <div class="code-container">
-              <div class="code-digit"></div>
-              <div class="code-digit"></div>
-              <div class="code-digit"></div>
-              <div class="code-digit"></div>
-              <div class="code-digit"></div>
-              <div class="code-digit"></div>
-            </div>
-          </div>
-        </div>
-
-        <div class="modal-overlay" id="modal-conectar">
-          <div class="modal-box">
-            <button class="modal-close" id="btn-fechar-conectar">&times;</button>
-            <h2>Conectar a um dispositivo</h2>
-            <p class="modal-subtitle">Digite o código do dispositivo servidor:</p>
-            <div class="code-input-container" id="inserir-Codigo">
-              <input type="text" maxlength="1" class="code-input-box" data-index="0">
-              <input type="text" maxlength="1" class="code-input-box" data-index="1">
-              <input type="text" maxlength="1" class="code-input-box" data-index="2">
-              <input type="text" maxlength="1" class="code-input-box" data-index="3">
-              <input type="text" maxlength="1" class="code-input-box" data-index="4">
-              <input type="text" maxlength="1" class="code-input-box" data-index="5">
-            </div>
-          </div>
-        </div>
-
-        <button class="btn-tornar-servidor" id="btn-tornar-servidor">Se tornar o dispositivo servidor</button>
       </section>
 
       <section id="nuvem" class="tab-panel">
@@ -86,6 +51,42 @@
     </main>
 
   </div>
+
+  <!-- Modais fora do tab-panel: position:fixed dentro de display:none não renderiza -->
+  <div class="modal-overlay" id="modal-codigo">
+    <div class="modal-box">
+      <button class="modal-close" id="btn-fechar-modal">&times;</button>
+      <h2>Seu dispositivo virou o servidor</h2>
+      <p class="subtitle">Use este código no outro dispositivo para conectar:</p>
+      <div class="codigo-display" id="codigo-texto">------</div>
+      <div class="code-container">
+        <div class="code-digit"></div>
+        <div class="code-digit"></div>
+        <div class="code-digit"></div>
+        <div class="code-digit"></div>
+        <div class="code-digit"></div>
+        <div class="code-digit"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="modal-conectar">
+    <div class="modal-box">
+      <button class="modal-close" id="btn-fechar-conectar">&times;</button>
+      <h2>Conectar a um dispositivo</h2>
+      <p class="modal-subtitle">Digite o código do dispositivo servidor:</p>
+      <div class="code-input-container" id="inserir-Codigo">
+        <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="code-input-box" data-index="0">
+        <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="code-input-box" data-index="1">
+        <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="code-input-box" data-index="2">
+        <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="code-input-box" data-index="3">
+        <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="code-input-box" data-index="4">
+        <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="code-input-box" data-index="5">
+      </div>
+    </div>
+  </div>
+
+  <button class="btn-tornar-servidor" id="btn-tornar-servidor">Se tornar o dispositivo servidor</button>
 
   <script src="PhysicalCloud.js"></script>
 </body>
