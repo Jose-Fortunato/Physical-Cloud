@@ -543,22 +543,26 @@ function tratarMensagem(event) {
             aguardandoAprovacao = false;
             sessaoAguardando = null;
             const permissao = String(dados.permissao || "leitura");
-            sessoes.set(String(dados.sessaoId), { papel: "cliente", nome: "Dispositivo servidor", permissao });
+            const sessaoId = String(dados.sessaoId);
+            sessoes.set(sessaoId, { papel: "cliente", nome: "Dispositivo servidor", permissao });
             telaDeConectar?.classList.remove("active");
             limparInputs();
             // @ts-ignore
             aviso(`${dados.mensagem || "Conexão estabelecida com sucesso!"} (${TEXTO_PERMISSAO[permissao] || permissao})`);
             atualizarListaDispositivos();
+            window.dispatchEvent(new CustomEvent("physicalcloud:sessao-ativa", { detail: { sessaoId, papel: "cliente" } }));
             break;
         }
 
         case "dispositivo-conectou": {
             const permissao = String(dados.permissao || "leitura");
             const nome = String(dados.nome || "Dispositivo");
-            sessoes.set(String(dados.sessaoId), { papel: "servidor", nome, permissao });
+            const sessaoId = String(dados.sessaoId);
+            sessoes.set(sessaoId, { papel: "servidor", nome, permissao });
             // @ts-ignore
             aviso(`${nome} conectou ao seu dispositivo (${TEXTO_PERMISSAO[permissao] || permissao}).`);
             atualizarListaDispositivos();
+            window.dispatchEvent(new CustomEvent("physicalcloud:sessao-ativa", { detail: { sessaoId, papel: "servidor" } }));
             break;
         }
 
@@ -578,6 +582,9 @@ function tratarMensagem(event) {
                 aviso(MOTIVOS_ENCERRAMENTO[dados.motivo] || "A conexão foi encerrada.");
             }
             atualizarListaDispositivos();
+            if (existia) {
+                window.dispatchEvent(new CustomEvent("physicalcloud:sessao-encerrada", { detail: { sessaoId: id } }));
+            }
             break;
         }
 
