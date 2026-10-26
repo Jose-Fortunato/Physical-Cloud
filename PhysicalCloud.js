@@ -221,7 +221,7 @@ let elContagem = null;
 /** @type {HTMLButtonElement | null} */
 let btnNovoCodigo = null;
 /** @type {HTMLButtonElement | null} */
-let btnPararServidor = null; // promovido a módulo para permitir remoção futura
+let btnPararServidor = null;
 let fimCodigo = 0;
 /** @type {ReturnType<typeof setInterval> | null} */
 let timerCodigo = null;
@@ -249,8 +249,6 @@ function prepararExtrasDoModalCodigo() {
         }
     });
 
-    // BUG CORRIGIDO (3ª auditoria): btnPararServidor promovido a variável de módulo
-    // (era const local, sem referência externa para remoção posterior).
     btnPararServidor = document.createElement("button");
     btnPararServidor.type = "button";
     btnPararServidor.id = "btn-parar-servidor";
@@ -490,8 +488,8 @@ document.getElementById("btn-tornar-servidor")?.addEventListener("click", () => 
     telaDeCodigo?.classList.remove("active");
 });
 
-// Permite parar de ser servidor (reseta souServidor para false e encerra sessões).
-// Exposto globalmente para uso por outros módulos ou pela UI no Bloco C.
+// [Fix.1] Agora invalida o código no servidor via "parar-servidor".
+// Sem isso, o código continuava válido por até 5 min após o usuário "parar de ser servidor".
 function pararServidor() {
     souServidor = false;
     meuCodigoServidor = null;
@@ -499,20 +497,16 @@ function pararServidor() {
     mostrarDigitos("");
     telaDeCodigo?.classList.remove("active");
 
-    // BUG CORRIGIDO (3ª auditoria): encerra sessões ativas em que este dispositivo
-    // é servidor. Sem isso, clientes continuavam aparecendo como "Online" mesmo após
-    // "Parar de ser servidor" — e o servidor WebSocket mantinha as sessões abertas.
-    //
-    // BUG CORRIGIDO (4ª auditoria): iterar sessoes com for...of enquanto encerrarSessao
-    // chama sessoes.delete() é seguro para entradas já visitadas, mas pode pular entradas
-    // ainda não visitadas se elas forem deletadas por efeito colateral. Solução: coleta
-    // os IDs primeiro, depois itera sobre o array estático.
+    // Invalida o código no servidor (mensagem nova do Fix.1)
+    enviar({ type: "parar-servidor" });
+
+    // Encerra sessões ativas em que este dispositivo é servidor.
     const idsServidor = [...sessoes.entries()]
         .filter(([, s]) => s.papel === "servidor")
         .map(([id]) => id);
     for (const id of idsServidor) encerrarSessao(id);
 }
-/** @type {any} */ (window).__pararServidor = pararServidor;
+// [Fix.6] Removido window.__pararServidor — alias não era usado por ninguém.
 
 document.getElementById("btn-conectar")?.addEventListener("click", abrirModalConectar);
 document.getElementById("btn-conectar-extra")?.addEventListener("click", abrirModalConectar);
@@ -525,10 +519,6 @@ fecharModalConectar?.addEventListener("click", () => {
 fecharModal?.addEventListener("click", () => {
     telaDeCodigo?.classList.remove("active");
 });
-
-// BUG 11 CORRIGIDO: listener do #btn-enviar removido daqui.
-// O dispatch de physicalcloud:solicitar-envio fica APENAS no index.html,
-// que já verifica se há canal aberto antes de emitir — evitando duplo dispatch.
 
 
 // ─── Mensagens recebidas do servidor WebSocket ────────────────────────────────
@@ -548,7 +538,10 @@ function tratarMensagem(event) {
 
     switch (dados.type) {
 
+        // [Fix.1b] Guard: só processa codigo-gerado se realmente somos servidor.
+        // Defesa em profundidade contra race com parar-servidor.
         case "codigo-gerado":
+            if (!souServidor) return;
             meuCodigoServidor = String(dados.codigo);
             if (codigoTexto) codigoTexto.textContent = meuCodigoServidor;
             mostrarDigitos(meuCodigoServidor);
@@ -566,13 +559,21 @@ function tratarMensagem(event) {
             aviso("Seu código expirou. Gere um novo para aceitar outros dispositivos.");
             break;
 
+        // [Fix.1] Confirmação do servidor de que o código foi removido.
+        case "servidor-parado":
+            // Nada a fazer — estado local já foi resetado em pararServidor().
+            break;
+
         case "aguardando-aprovacao":
             aguardandoAprovacao = true;
             sessaoAguardando = String(dados.sessaoId);
             aviso("Pedido enviado. Aguarde o outro dispositivo aprovar…");
             break;
 
+        // [Fix.1b] Guard: se souServidor virou false (usuário clicou parar),
+        // um pedido-conexao em trânsito ainda pode chegar. Ignora.
         case "pedido-conexao":
+            if (!souServidor) return;
             filaPedidos.push({
                 sessaoId: String(dados.sessaoId),
                 nome: String(dados.nome || "Dispositivo"),
@@ -671,8 +672,6 @@ function conectarSocket() {
         }
 
         if (souServidor) {
-            // B5 CORRIGIDO: ao reconectar como servidor, reabre o modal com o novo código
-            // para o usuário não ficar sem saber qual código compartilhar.
             abrirModalAoGerar = true;
             enviar({ type: "tornar-servidor", deviceId: obterDeviceId() });
         }
@@ -695,8 +694,6 @@ function conectarSocket() {
         mostrarDigitos("");
         telaDeCodigo?.classList.remove("active");
 
-        // B4 CORRIGIDO: dispara sessao-encerrada para cada sessão antes de limpar o Map,
-        // para que PhysicalCloud-webrtc.js possa fechar os RTCPeerConnections corretamente.
         for (const [sessaoId] of sessoes) {
             window.dispatchEvent(new CustomEvent("physicalcloud:sessao-encerrada", { detail: { sessaoId } }));
         }
@@ -743,25 +740,25 @@ function encerrarSessao(sessaoId) {
 
 // ─── Listener: aviso local quando peer WebRTC falha neste dispositivo ────────
 //
-// webrtc.js emite este evento ao detectar connectionState "failed" ou "closed"
-// ANTES de chamar encerrarSessao. Isso garante que o dispositivo que teve a
-// falha veja o aviso na tela — encerrarSessao chama sessoes.delete() localmente,
-// então quando "sessao-encerrada" chega de volta do servidor, existia = false
-// e o aviso normal não seria exibido.
-//
-// BUG CORRIGIDO (4ª auditoria): aviso era genérico ("A conexão com o dispositivo
-// foi perdida") sem identificar qual dispositivo caiu. Com múltiplos dispositivos,
-// o usuário não sabia qual conexão foi perdida. Corrigido buscando sessoes.get()
-// pelo sessaoId para exibir o nome do dispositivo.
+// [Fix.4/C4] Distingue três motivos:
+//   - "conexao-perdida": estava conectado e caiu (mensagem atual)
+//   - "conexao-nao-estabelecida": ICE falhou antes de conectar (NAT/firewall)
+//   - "relay-detectado": getStats() detectou candidateType "relay"
 window.addEventListener("physicalcloud:aviso-local", (event) => {
     const { sessaoId, motivo } = /** @type {CustomEvent} */ (event).detail;
+    const s = sessaoId ? sessoes.get(String(sessaoId)) : undefined;
+    const nome = s?.nome || "Dispositivo";
+
     if (motivo === "conexao-perdida") {
-        const s = sessaoId ? sessoes.get(String(sessaoId)) : undefined;
-        const nome = s?.nome || "Dispositivo";
         aviso(`A conexão com ${nome} foi perdida.`);
+    } else if (motivo === "conexao-nao-estabelecida") {
+        aviso(`Não foi possível conectar diretamente com ${nome}. Verifique firewalls ou tente outra rede.`);
+    } else if (motivo === "relay-detectado") {
+        aviso(`Conexão com ${nome} está sendo retransmitida. Pode ser mais lenta que o normal.`);
     }
 });
 
+// [Fix.6] `api` mantido como objeto público; window.__pararServidor removido.
 /** @type {any} */ (window).PhysicalCloud = { enviar, sessoes, obterDeviceId, encerrarSessao, aviso };
 
 conectarSocket();

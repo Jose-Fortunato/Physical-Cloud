@@ -16,20 +16,13 @@
 //
 //   Qualquer lado pode cancelar com:
 //   JSON {type:"file-cancel", transferId}
-//
-// Limitações desta versão:
-//   - Uma transferência por sessão por vez (fila se houver mais de uma).
-//   - File System Access API usada para salvar sem carregar em RAM.
-//   - Em navegadores sem File System Access (Android Chrome < 86), fallback para Blob + download link.
-//   - Receptor aceita automaticamente (confirmação de UI planejada para Bloco C).
 
 const TAMANHO_CHUNK = 256 * 1024; // 256 KB
 const BUFFER_ALTO   = 4 * 1024 * 1024; // 4 MB — pausa envio
 const BUFFER_BAIXO  = 512 * 1024;      // 512 KB — retoma envio
 
-const api = /** @type {any} */ (window).PhysicalCloud;
-
-if (!api) {
+// [Fix.6] Sanity check sem reter variável não usada.
+if (!(/** @type {any} */ (window).PhysicalCloud)) {
     console.error("PhysicalCloud-transfer.js: window.PhysicalCloud não encontrado.");
 }
 
@@ -42,6 +35,7 @@ if (!api) {
  *   tipo: string,
  *   enviados: number,
  *   estado: "enviando"|"recebendo"|"concluido"|"cancelado"|"erro",
+ *   cancelarPausa?: (() => void) | null,   // [Fix.2/C3] resolve backpressure
  * }} EntradaTransfer
  */
 
@@ -64,6 +58,11 @@ const ativasEnvio = new Map();
 /** sessaoId → transferId ativa (recebimento) */
 /** @type {Map<string, string>} */
 const ativasRecebimento = new Map();
+
+// [Fix.3/Item1] Controladores da fila de serialização por sessão.
+// Antes viviam como closures em canal-aberto; agora são descartáveis.
+/** @type {Map<string, { fila: Array<() => Promise<void>>, ocupado: boolean, cancelado: boolean }>} */
+const controladoresFila = new Map();
 
 // ─── SHA-256 via Web Crypto ───────────────────────────────────────────────────
 
@@ -99,22 +98,7 @@ function emitir(tipo, detalhe) {
 
 /**
  * Envia um arquivo via DataChannel para uma sessão.
- *
- * Streaming via ReadableStream com backpressure (bufferedAmountLowThreshold).
- * SHA-256 calculado com arquivo.arrayBuffer() APÓS o streaming terminar.
- *
- * Nota sobre tee() e RAM (4ª auditoria):
- *   tee() parecia uma boa ideia para calcular SHA em paralelo, mas a spec exige
- *   que o runtime armazene internamente todo chunk já lido por um branch e ainda
- *   não pelo outro. Com backpressure no envio (DataChannel ordered + janela de
- *   congestionamento), o branch do SHA vai muito à frente e acumula o arquivo
- *   inteiro em RAM — exatamente o problema que tentávamos evitar.
- *
- *   Solução correta: streaming puro para envio; SHA com arrayBuffer() após o
- *   streaming terminar. O pico de RAM (~tamanho do arquivo) acontece uma vez,
- *   apenas após todo o envio estar completo, nunca ao mesmo tempo.
- *
- * Backpressure via addEventListener("bufferedamountlow").
+ * Streaming com backpressure. SHA-256 calculado APÓS o streaming terminar.
  *
  * @param {string} sessaoId
  * @param {File} arquivo
@@ -136,6 +120,7 @@ async function enviarArquivo(sessaoId, arquivo) {
         tipo: arquivo.type || "application/octet-stream",
         enviados: 0,
         estado: "enviando",
+        cancelarPausa: null,
     };
     transferencias.set(transferId, entrada);
     ativasEnvio.set(sessaoId, transferId);
@@ -170,28 +155,45 @@ async function enviarArquivo(sessaoId, arquivo) {
 
     dc.bufferedAmountLowThreshold = BUFFER_BAIXO;
     let pausado = false;
-    /** @type {((value?: void | PromiseLike<void>) => void) | null} */
+    
+    // CORREÇÃO TS: Tipagem exata do resolve da Promise
+    /** @type {((value?: any) => void) | null} */
     let resolverPausa = null;
-    const onBufferLow = () => {
+
+    const liberarPausa = () => {
         if (pausado && resolverPausa) {
+            const r = resolverPausa;
             pausado = false;
-            resolverPausa();
             resolverPausa = null;
+            r();
         }
     };
+
+    const onBufferLow = () => liberarPausa();
+    const onClose = () => liberarPausa();
+
     dc.addEventListener("bufferedamountlow", onBufferLow);
+    dc.addEventListener("close", onClose);
+
+    entrada.cancelarPausa = liberarPausa;
 
     try {
         while (true) {
-            if (entrada.estado === "cancelado") break;
+            // Cast para string evita o TypeScript achar que entrada.estado 
+            // nunca mais será "cancelado" após a primeira checagem.
+            if (/** @type {string} */ (entrada.estado) === "cancelado") break;
 
             const { done, value } = await reader.read();
             if (done) break;
 
             let offset = 0;
             while (offset < value.byteLength) {
-                // @ts-ignore
-                if (entrada.estado === "cancelado") break;
+                if (/** @type {string} */ (entrada.estado) === "cancelado") break;
+
+                if (dc.readyState !== "open") {
+                    entrada.estado = "cancelado";
+                    break;
+                }
 
                 const fim = Math.min(offset + TAMANHO_CHUNK, value.byteLength);
                 const fatia = value.buffer.slice(value.byteOffset + offset, value.byteOffset + fim);
@@ -201,11 +203,13 @@ async function enviarArquivo(sessaoId, arquivo) {
 
                 emitir("physicalcloud:transfer-progresso", {
                     transferId, sessaoId, enviados: entrada.enviados, total: arquivo.size,
+                    timestamp: Date.now(),
                 });
 
                 if (dc.bufferedAmount > BUFFER_ALTO) {
                     pausado = true;
-                    await new Promise(res => { resolverPausa = res; });
+                    // CORREÇÃO TS: atribui o `res` diretamente, eliminando arrow functions aninhadas.
+                    await new Promise((res) => { resolverPausa = res; });
                 }
 
                 offset = fim;
@@ -214,6 +218,8 @@ async function enviarArquivo(sessaoId, arquivo) {
     } finally {
         reader.releaseLock();
         dc.removeEventListener("bufferedamountlow", onBufferLow);
+        dc.removeEventListener("close", onClose);
+        entrada.cancelarPausa = null;
     }
 
     if (entrada.estado === "cancelado") {
@@ -224,17 +230,10 @@ async function enviarArquivo(sessaoId, arquivo) {
     }
 
     // ── SHA-256 calculado APÓS o streaming — pico de RAM pontual e isolado ────
-    //
-    // arquivo.arrayBuffer() lê o arquivo do disco uma vez, após todo o envio
-    // terminar. O pico de RAM (~tamanho do arquivo) é breve e nunca se sobrepõe
-    // ao buffer do DataChannel, que já foi drenado neste ponto.
     let sha256;
     try {
         sha256 = await calcularSha256(await arquivo.arrayBuffer());
     } catch (e) {
-        // BUG CORRIGIDO (4ª auditoria): sha256 = "" enviava "file-done" com SHA inválido,
-        // fazendo o receptor reportar "arquivo corrompido" mesmo que o arquivo estivesse
-        // íntegro. Correto é cancelar a transferência.
         console.error("Falha ao calcular SHA-256:", e);
         entrada.estado = "cancelado";
         if (dc.readyState === "open") {
@@ -247,9 +246,7 @@ async function enviarArquivo(sessaoId, arquivo) {
         return;
     }
 
-    // Envia sinal de conclusão com SHA-256
     dc.send(JSON.stringify({ type: "file-done", transferId, sha256 }));
-    // Não emite transfer-concluido aqui — aguarda file-ok/file-error do receptor.
 }
 
 // ─── Aguardar aceitação ───────────────────────────────────────────────────────
@@ -322,42 +319,29 @@ function enfileirarArquivos(sessaoId, arquivos) {
 const recebimentos = new Map();
 
 /**
- * BUG CRÍTICO CORRIGIDO (3ª auditoria): picker bloqueava com await ANTES de
- * recebimentos.set(), então chunks que chegavam enquanto o usuário escolhia
- * o destino eram descartados silenciosamente em tratarChunk (rec === undefined).
- *
- * Fluxo correto (picker não-bloqueante):
- *   1. Registra recebimentos.set() IMEDIATAMENTE com writerHandle = null
- *   2. Registra ativasRecebimento IMEDIATAMENTE
- *   3. Envia file-accept — remetente começa a enviar; chunks vão para rec.chunks (RAM)
- *   4. Abre picker em paralelo com .then() — sem bloquear o recebimento de chunks
- *   5. Quando writer fica pronto: flush dos chunks acumulados em RAM para o writer
- *
- * Se o picker for cancelado ou não disponível, o fallback Blob/RAM já está ativo
- * porque writerHandle ficou null — tratarChunk acumula em rec.chunks normalmente.
- *
  * @param {string} sessaoId
  * @param {any} msg
  * @param {RTCDataChannel} dc
- * @param {(fn: () => Promise<void>) => void} enfileirar função de enfileiramento da sessão
+ * @param {(fn: () => Promise<void>) => void} enfileirar
  */
 async function tratarFileOffer(sessaoId, msg, dc, enfileirar) {
     const { transferId, nome, tamanho, tipo } = msg;
 
-    // BUG CORRIGIDO (5ª auditoria): validar transferId e tamanho vindos do remoto.
-    // transferId sem validação aceitaria "__proto__", "constructor" ou strings enormes.
-    // tamanho sem validação aceitaria Infinity ou negativos, causando Uint8Array inválido.
     if (
         typeof transferId !== "string" ||
         !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(transferId)
     ) return;
-    if (!nome || typeof nome !== "string") return;
+
+    if (typeof nome !== "string" || nome.length === 0 || nome.length > 255) return;
+
     if (typeof tamanho !== "number" || !Number.isFinite(tamanho) || tamanho < 0) return;
 
-    // 1. Registra imediatamente com writerHandle provisoriamente null.
-    //    Chunks que chegarem antes do picker estar pronto vão para rec.chunks (RAM).
+    const tipoSeguro = (typeof tipo === "string" && /^[\w.+-]+\/[\w.+-]+$/.test(tipo))
+        ? tipo
+        : "application/octet-stream";
+
     recebimentos.set(sessaoId, {
-        transferId, nome, tamanho, tipo,
+        transferId, nome, tamanho, tipo: tipoSeguro,
         chunks: [],
         recebidos: 0,
         writerHandle: null,
@@ -365,68 +349,52 @@ async function tratarFileOffer(sessaoId, msg, dc, enfileirar) {
     });
     ativasRecebimento.set(sessaoId, transferId);
 
-    // 2. Aceita agora — remetente começa a enviar. Chunks já são capturados.
-    // TODO (Bloco C): emitir physicalcloud:confirmar-recebimento e aguardar UI.
     dc.send(JSON.stringify({ type: "file-accept", transferId }));
 
     emitir("physicalcloud:transfer-inicio", {
         transferId, sessaoId, nome, tamanho, direcao: "recebimento",
     });
 
-    // 3. Abre o picker em paralelo — não bloqueia o recebimento de chunks.
-    //    O flush é enfileirado na MESMA fila da sessão para não correr em paralelo
-    //    com chunks que já estão na fila aguardando escrita no writer.
     const temFSAPI = "showSaveFilePicker" in window;
     if (temFSAPI) {
         // @ts-ignore
         window.showSaveFilePicker({
             suggestedName: nome,
-            types: [{ description: "Arquivo", accept: { [tipo || "application/octet-stream"]: [] } }],
+            types: [{ description: "Arquivo", accept: { [tipoSeguro]: [] } }],
         })
             .then(/** @param {FileSystemFileHandle} fh */ (fh) => {
-                // BUG CORRIGIDO (5ª auditoria): flush encadeado na mesma fila dos chunks.
-                // Antes, o flush rodava fora da fila — um chunk na fila podia correr em
-                // paralelo com o for() do flush no mesmo FileSystemWritableFileStream.
                 enfileirar(async () => {
                     const wh = await fh.createWritable();
                     const rec = recebimentos.get(sessaoId);
                     if (!rec || rec.transferId !== transferId) {
-                        // Transferência já terminou antes do flush — aborta writer
                         await wh.abort().catch(() => {});
                         return;
                     }
-                    // Flush dos chunks acumulados em RAM enquanto o picker estava aberto
                     for (const chunk of rec.chunks) {
                         await wh.write(chunk);
                     }
-                    rec.chunks = []; // libera RAM
+                    rec.chunks = [];
                     rec.writerHandle = wh;
                     rec.fileHandle = fh;
                 });
             })
-            .catch(() => {
-                // Usuário cancelou o picker ou API falhou — fallback Blob em RAM já está ativo
-                // (rec.writerHandle continua null; tratarChunk continua acumulando em rec.chunks)
-            });
+            .catch(() => {});
     }
-    // Se não tem FSA, rec.writerHandle permanece null → fallback Blob automático em tratarChunk
 }
 
 /**
  * @param {string} sessaoId
  * @param {any} msg
  * @param {RTCDataChannel} dc
- * @param {(fn: () => Promise<void>) => void} enfileirar função de enfileiramento da sessão
+ * @param {(fn: () => Promise<void>) => void} enfileirar
  */
 async function tratarMensagemJson(sessaoId, msg, dc, enfileirar) {
     if (!msg || typeof msg.type !== "string") return;
 
     switch (msg.type) {
-
         case "file-offer":
             await tratarFileOffer(sessaoId, msg, dc, enfileirar);
             break;
-
         case "file-accept": {
             const prom = aguardandoAceitacaoMap.get(msg.transferId);
             if (prom) {
@@ -435,7 +403,6 @@ async function tratarMensagemJson(sessaoId, msg, dc, enfileirar) {
             }
             break;
         }
-
         case "file-done": {
             const rec = recebimentos.get(sessaoId);
             if (!rec || rec.transferId !== msg.transferId) return;
@@ -453,7 +420,6 @@ async function tratarMensagemJson(sessaoId, msg, dc, enfileirar) {
                     return;
                 }
 
-                // Verifica integridade relendo o arquivo do disco
                 try {
                     if (rec.fileHandle) {
                         const f = await rec.fileHandle.getFile();
@@ -467,7 +433,7 @@ async function tratarMensagemJson(sessaoId, msg, dc, enfileirar) {
                             return;
                         }
                     }
-                } catch { /* ignora erro de verificação — arquivo já está salvo */ }
+                } catch { /* ignora */ }
 
                 dc.send(JSON.stringify({ type: "file-ok", transferId: rec.transferId }));
                 emitir("physicalcloud:transfer-concluido", {
@@ -475,7 +441,6 @@ async function tratarMensagemJson(sessaoId, msg, dc, enfileirar) {
                 });
 
             } else {
-                // Fallback Blob
                 const blob = new Blob(rec.chunks, { type: rec.tipo || "application/octet-stream" });
                 const buf = await blob.arrayBuffer();
                 const sha256Local = await calcularSha256(buf);
@@ -506,7 +471,6 @@ async function tratarMensagemJson(sessaoId, msg, dc, enfileirar) {
             ativasRecebimento.delete(sessaoId);
             break;
         }
-
         case "file-cancel": {
             const rec = recebimentos.get(sessaoId);
             if (rec && rec.transferId === msg.transferId) {
@@ -519,16 +483,15 @@ async function tratarMensagemJson(sessaoId, msg, dc, enfileirar) {
             const tidEnvio = ativasEnvio.get(sessaoId);
             if (tidEnvio && tidEnvio === msg.transferId) {
                 const e = transferencias.get(tidEnvio);
-                if (e) e.estado = "cancelado";
+                if (e) {
+                    e.estado = "cancelado";
+                    if (typeof e.cancelarPausa === "function") e.cancelarPausa();
+                }
             }
             emitir("physicalcloud:transfer-cancelado", { sessaoId, transferId: msg.transferId });
             break;
         }
-
         case "file-ok": {
-            // BUG 10 CORRIGIDO (auditoria anterior): receptor confirmou SHA-256 com sucesso.
-            // BUG 2 (esta auditoria): usa sessaoId do parâmetro da função, não entrada.sessaoId,
-            // que é mais confiável e direto.
             const tid = msg.transferId;
             const entrada = transferencias.get(tid);
             if (!entrada) break;
@@ -541,9 +504,7 @@ async function tratarMensagemJson(sessaoId, msg, dc, enfileirar) {
             processarFila(sessaoId);
             break;
         }
-
         case "file-error": {
-            // Receptor reportou falha (SHA inválido, disco cheio, etc.)
             const tid = msg.transferId;
             const entrada = transferencias.get(tid);
             if (!entrada) break;
@@ -561,8 +522,9 @@ async function tratarMensagemJson(sessaoId, msg, dc, enfileirar) {
 /**
  * @param {string} sessaoId
  * @param {ArrayBuffer} data
+ * @param {RTCDataChannel} dc
  */
-async function tratarChunk(sessaoId, data) {
+async function tratarChunk(sessaoId, data, dc) {
     const rec = recebimentos.get(sessaoId);
     if (!rec) return;
 
@@ -571,6 +533,16 @@ async function tratarChunk(sessaoId, data) {
             await rec.writerHandle.write(data);
         } catch (e) {
             console.error("Erro ao escrever chunk em disco:", e);
+            if (dc.readyState === "open") {
+                dc.send(JSON.stringify({ type: "file-cancel", transferId: rec.transferId }));
+            }
+            await rec.writerHandle.abort().catch(() => {});
+            recebimentos.delete(sessaoId);
+            ativasRecebimento.delete(sessaoId);
+            emitir("physicalcloud:transfer-erro", {
+                sessaoId, transferId: rec.transferId, motivo: "Erro ao escrever no disco.",
+            });
+            return;
         }
     } else {
         rec.chunks.push(data);
@@ -579,6 +551,7 @@ async function tratarChunk(sessaoId, data) {
     rec.recebidos += data.byteLength;
     emitir("physicalcloud:transfer-progresso", {
         transferId: rec.transferId, sessaoId, enviados: rec.recebidos, total: rec.tamanho,
+        timestamp: Date.now(),
     });
 }
 
@@ -588,38 +561,28 @@ window.addEventListener("physicalcloud:canal-aberto", (event) => {
     const { sessaoId, dc } = /** @type {CustomEvent} */ (event).detail;
     canais.set(sessaoId, dc);
 
-    // BUG CORRIGIDO (4ª auditoria): serialização necessária para evitar writes concorrentes
-    // no mesmo FileSystemWritableFileStream, cujo contrato não garante ordem em paralelo.
-    //
-    // BUG CORRIGIDO (5ª auditoria): padrão cadeia = cadeia.then() acumulava ~4096 Promises
-    // encadeadas para um arquivo de 1 GB (chunks de 256 KB). Cada .then() mantém referência
-    // à Promise anterior impedindo o GC — memória cresce linearmente com nº de chunks.
-    //
-    // Solução: fila + mutex. Cada Promise resolve e é coletada pelo GC imediatamente.
-    // ocupado: boolean que garante no máximo uma tarefa ativa por vez.
-    // fila: array de funções () => Promise<void> aguardando execução.
-    // processar(): drena a fila sequencialmente sem acumular referências.
-    let ocupado = false;
-    /** @type {Array<() => Promise<void>>} */
-    const fila = [];
+    /** @type {{ fila: Array<() => Promise<void>>, ocupado: boolean, cancelado: boolean }} */
+    const ctrl = { fila: [], ocupado: false, cancelado: false };
+    controladoresFila.set(sessaoId, ctrl);
 
     function processar() {
-        if (ocupado) return;
-        ocupado = true;
+        if (ctrl.cancelado || ctrl.ocupado) return;
+        ctrl.ocupado = true;
         (async () => {
-            while (fila.length > 0) {
-                const tarefa = fila.shift();
+            while (!ctrl.cancelado && ctrl.fila.length > 0) {
+                const tarefa = ctrl.fila.shift();
                 if (tarefa) {
                     try { await tarefa(); } catch (e) { console.error("Erro na fila de transferência:", e); }
                 }
             }
-            ocupado = false;
+            ctrl.ocupado = false;
         })();
     }
 
     /** @param {() => Promise<void>} fn */
     function enfileirar(fn) {
-        fila.push(fn);
+        if (ctrl.cancelado) return;
+        ctrl.fila.push(fn);
         processar();
     }
 
@@ -629,15 +592,11 @@ window.addEventListener("physicalcloud:canal-aberto", (event) => {
             try { msg = JSON.parse(ev.data); } catch { msg = null; }
 
             if (msg && typeof msg.type === "string" && msg.type.startsWith("file-")) {
-                // Enfileira para não interfolhar com writes pendentes de chunks anteriores.
-                // tratarMensagemJson recebe enfileirar para repassar a tratarFileOffer,
-                // que o usa para encadear o flush do picker na mesma fila.
                 enfileirar(() => tratarMensagemJson(sessaoId, msg, dc, enfileirar));
             }
-            // Mensagens não-file-* (ex.: pc-ok) tratadas pelo handler do webrtc.js
         } else if (ev.data instanceof ArrayBuffer) {
             if (ativasRecebimento.has(sessaoId)) {
-                enfileirar(() => tratarChunk(sessaoId, /** @type {ArrayBuffer} */ (ev.data)));
+                enfileirar(() => tratarChunk(sessaoId, /** @type {ArrayBuffer} */ (ev.data), dc));
             }
         }
     });
@@ -648,10 +607,20 @@ window.addEventListener("physicalcloud:sessao-encerrada", (event) => {
     canais.delete(sessaoId);
     filas.delete(sessaoId);
 
+    const ctrl = controladoresFila.get(sessaoId);
+    if (ctrl) {
+        ctrl.cancelado = true;
+        ctrl.fila.length = 0;
+        controladoresFila.delete(sessaoId);
+    }
+
     const tidEnvio = ativasEnvio.get(sessaoId);
     if (tidEnvio) {
         const entrada = transferencias.get(tidEnvio);
-        if (entrada) entrada.estado = "cancelado";
+        if (entrada) {
+            entrada.estado = "cancelado";
+            if (typeof entrada.cancelarPausa === "function") entrada.cancelarPausa();
+        }
         ativasEnvio.delete(sessaoId);
     }
 
@@ -707,16 +676,50 @@ window.addEventListener("physicalcloud:solicitar-envio", () => {
     canais,
     transferencias,
     /**
-     * @param {string} sessaoId
+     * @param {string} transferId
      */
-    cancelarTransferencia(sessaoId) {
-        const tid = ativasEnvio.get(sessaoId) || ativasRecebimento.get(sessaoId);
-        if (!tid) return;
-        const entrada = transferencias.get(tid);
-        if (entrada) entrada.estado = "cancelado";
+    cancelarTransferencia(transferId) {
+        if (!transferId) return;
+
+        let sessaoId = null;
+        /** @type {"envio"|"recebimento"|null} */
+        let sentido = null;
+
+        for (const [sid, tid] of ativasEnvio) {
+            if (tid === transferId) { sessaoId = sid; sentido = "envio"; break; }
+        }
+        if (!sessaoId) {
+            for (const [sid, tid] of ativasRecebimento) {
+                if (tid === transferId) { sessaoId = sid; sentido = "recebimento"; break; }
+            }
+        }
+        if (!sessaoId || !sentido) return;
+
         const dc = canais.get(sessaoId);
         if (dc && dc.readyState === "open") {
-            dc.send(JSON.stringify({ type: "file-cancel", transferId: tid }));
+            dc.send(JSON.stringify({ type: "file-cancel", transferId }));
         }
+
+        if (sentido === "envio") {
+            const entrada = transferencias.get(transferId);
+            if (entrada) {
+                entrada.estado = "cancelado";
+                if (typeof entrada.cancelarPausa === "function") entrada.cancelarPausa();
+            }
+            const prom = aguardandoAceitacaoMap.get(transferId);
+            if (prom) {
+                aguardandoAceitacaoMap.delete(transferId);
+                prom.reject(new Error("Cancelado pelo usuário."));
+            }
+        } else {
+            const rec = recebimentos.get(sessaoId);
+            if (rec && rec.transferId === transferId) {
+                if (rec.writerHandle) rec.writerHandle.abort().catch(() => {});
+                recebimentos.delete(sessaoId);
+            }
+            ativasRecebimento.delete(sessaoId);
+        }
+
+        emitir("physicalcloud:transfer-cancelado", { transferId, sessaoId });
     },
 };

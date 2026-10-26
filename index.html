@@ -10,9 +10,7 @@
 
   <div class="app">
 
-    <!-- Botão hambúrguer para mobile -->
     <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Menu">&#9776;</button>
-    <!-- Overlay para fechar sidebar no mobile -->
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
     <aside class="sidebar" id="sidebar">
@@ -51,35 +49,29 @@
         <h1>Nuvem</h1>
         <p class="subtitle">Envie e receba arquivos diretamente entre dispositivos via P2P.</p>
 
-        <!-- Estado: sem dispositivos conectados -->
         <div id="nuvem-sem-canal" class="empty-state">
           <p>Nenhum dispositivo conectado.<br>Conecte um dispositivo primeiro.</p>
           <button class="primary-btn" id="btn-ir-dispositivos">Ver dispositivos</button>
         </div>
 
-        <!-- Estado: com dispositivos conectados -->
         <div id="nuvem-com-canal" style="display:none">
 
-          <!-- Seletor de destino (visível quando há mais de uma sessão) -->
           <div id="destino-container" class="destino-container" style="display:none">
             <label class="destino-label" for="destino-select">Enviar para:</label>
             <select id="destino-select" class="destino-select"></select>
           </div>
 
-          <!-- Botão de enviar -->
           <div class="nuvem-acoes">
             <button class="primary-btn" id="btn-enviar">
               <span class="btn-icon">&#8679;</span> Enviar arquivo
             </button>
           </div>
 
-          <!-- Transferências em andamento -->
           <div id="transfers-ativos" style="display:none">
             <h2 class="section-title">Em andamento</h2>
             <div id="lista-transfers" class="lista-transfers"></div>
           </div>
 
-          <!-- Histórico de recebidos -->
           <div id="recebidos-container" style="display:none">
             <h2 class="section-title">Recebidos nesta sessão</h2>
             <div id="lista-recebidos" class="lista-recebidos"></div>
@@ -92,14 +84,11 @@
 
   </div>
 
-  <!-- Modais fora do tab-panel: position:fixed dentro de display:none não renderiza -->
   <div class="modal-overlay" id="modal-codigo">
     <div class="modal-box">
       <button class="modal-close" id="btn-fechar-modal">&times;</button>
       <h2>Seu dispositivo virou o servidor</h2>
       <p class="subtitle">Use este código no outro dispositivo para conectar:</p>
-      <!-- BUG 5 CORRIGIDO: aria-hidden evita que leitores de tela leiam "------" antes do código chegar.
-           O elemento continua existindo para o JS atualizar o textContent, mas é invisível e mudo para assistive tech. -->
       <div class="codigo-display" id="codigo-texto" aria-hidden="true"></div>
       <div class="code-container">
         <div class="code-digit"></div>
@@ -147,7 +136,6 @@
       sidebar?.classList.remove("open");
       sidebarOverlay?.classList.remove("active");
     });
-    // Fecha sidebar ao navegar (mobile)
     document.querySelectorAll(".nav-item[data-tab]").forEach(btn => {
       btn.addEventListener("click", () => {
         sidebar?.classList.remove("open");
@@ -182,12 +170,12 @@
 
       if (!temCanal || !destinoContainer || !destinoSelect) return;
 
-      // Atualiza seletor de destino
       const sessaoIds = Array.from(canais.keys());
       if (sessaoIds.length > 1) {
         destinoContainer.style.display = "";
         const sessoes = /** @type {any} */ (window).PhysicalCloud?.sessoes;
-        destinoSelect.innerHTML = "";
+        // [Fix.6] replaceChildren em vez de innerHTML = ""
+        destinoSelect.replaceChildren();
         for (const sid of sessaoIds) {
           const opt = document.createElement("option");
           opt.value = sid;
@@ -200,10 +188,8 @@
       }
     }
 
-    // Atualiza quando canais abrem/fecham
     window.addEventListener("physicalcloud:canal-aberto",    atualizarEstadoNuvem);
     window.addEventListener("physicalcloud:sessao-encerrada", atualizarEstadoNuvem);
-    // Atualiza ao trocar para aba Nuvem
     document.querySelectorAll(".nav-item[data-tab='nuvem']").forEach(btn => {
       btn.addEventListener("click", atualizarEstadoNuvem);
     });
@@ -218,18 +204,14 @@
       window.dispatchEvent(new CustomEvent("physicalcloud:solicitar-envio"));
     });
 
-    // Quando há mais de um canal e o usuário precisa escolher o destino
     window.addEventListener("physicalcloud:escolher-destino", (event) => {
       const { arquivos, sessaoIds } = /** @type {CustomEvent} */ (event).detail;
-      // Usa o destino selecionado no select
       const sid = destinoSelect?.value || sessaoIds[0];
       const t = /** @type {any} */ (window).PhysicalCloudTransfer;
       if (t) t.enfileirarArquivos(sid, arquivos);
     });
 
-    // ─── Sem canal ────────────────────────────────────────────────────────────
     window.addEventListener("physicalcloud:transfer-sem-canal", () => {
-      // Redireciona para aba dispositivos
       document.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
       document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
       document.querySelector(".nav-item[data-tab='dispositivos']")?.classList.add("active");
@@ -241,10 +223,46 @@
     /** @type {Map<string, HTMLElement>} */
     const cardsPorTransfer = new Map();
 
+    // [Fix.4/B1] Amostras para cálculo de velocidade MB/s real.
+    /** @type {Map<string, { ultimoEnviado: number, ultimoTimestamp: number, velocidade: number }>} */
+    const amostrasVelocidade = new Map();
+
     function formatarBytes(bytes) {
       if (bytes < 1024) return bytes + " B";
       if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
       return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+    }
+
+    function formatarVelocidade(bytesPerSec) {
+      if (!isFinite(bytesPerSec) || bytesPerSec <= 0) return "—";
+      if (bytesPerSec < 1024) return bytesPerSec.toFixed(0) + " B/s";
+      if (bytesPerSec < 1024 * 1024) return (bytesPerSec / 1024).toFixed(1) + " KB/s";
+      return (bytesPerSec / (1024 * 1024)).toFixed(2) + " MB/s";
+    }
+
+    function formatarEta(segundos) {
+      if (!isFinite(segundos) || segundos <= 0) return "—";
+      if (segundos < 60) return Math.ceil(segundos) + "s";
+      const m = Math.floor(segundos / 60);
+      const s = Math.ceil(segundos % 60);
+      return m + "m " + s + "s";
+    }
+
+    function calcularVelocidade(transferId, enviados) {
+      const agora = Date.now();
+      const amostra = amostrasVelocidade.get(transferId);
+      if (!amostra) {
+        amostrasVelocidade.set(transferId, { ultimoEnviado: enviados, ultimoTimestamp: agora, velocidade: 0 });
+        return 0;
+      }
+      const dt = agora - amostra.ultimoTimestamp;
+      if (dt < 500) return amostra.velocidade;
+      const dBytes = enviados - amostra.ultimoEnviado;
+      const novaVel = (dBytes / dt) * 1000;
+      amostra.velocidade = novaVel;
+      amostra.ultimoEnviado = enviados;
+      amostra.ultimoTimestamp = agora;
+      return novaVel;
     }
 
     window.addEventListener("physicalcloud:transfer-inicio", (event) => {
@@ -257,8 +275,6 @@
       const icone = direcao === "envio" ? "↑" : "↓";
       const corIcone = direcao === "envio" ? "#39ff8f" : "#4db8ff";
 
-      // BUG 3 + 8 (XSS) CORRIGIDO: nome vem do dispositivo remoto — nunca interpolado em innerHTML.
-      // Usamos createElement + textContent para todos os campos de origem externa.
       const header = document.createElement("div");
       header.className = "transfer-header";
 
@@ -269,7 +285,7 @@
 
       const nomeEl = document.createElement("span");
       nomeEl.className = "transfer-nome";
-      nomeEl.textContent = nome; // ← textContent, nunca innerHTML
+      nomeEl.textContent = nome;
 
       const tamanhoEl = document.createElement("span");
       tamanhoEl.className = "transfer-tamanho";
@@ -280,8 +296,10 @@
       cancelBtn.title = "Cancelar";
       cancelBtn.textContent = "✕";
       cancelBtn.addEventListener("click", () => {
+        // [Fix.2/C2] Passa transferId (não sessaoId) para evitar cancelar
+        // a transferência errada em sessões bidirecionais.
         const t = /** @type {any} */ (window).PhysicalCloudTransfer;
-        if (t) t.cancelarTransferencia(sessaoId);
+        if (t) t.cancelarTransferencia(transferId);
       });
 
       header.appendChild(iconeEl);
@@ -319,7 +337,15 @@
       const status = card.querySelector(".transfer-status");
 
       if (barra) barra.style.width = pct + "%";
-      if (status) status.textContent = `${pct}% — ${formatarBytes(enviados)} / ${formatarBytes(total)}`;
+
+      // [Fix.4/B1] Velocidade real + ETA
+      const vel = calcularVelocidade(transferId, enviados);
+      const restante = Math.max(0, total - enviados);
+      const eta = vel > 0 ? restante / vel : Infinity;
+
+      if (status) {
+        status.textContent = `${pct}% — ${formatarBytes(enviados)} / ${formatarBytes(total)} — ${formatarVelocidade(vel)} — ETA ${formatarEta(eta)}`;
+      }
     });
 
     window.addEventListener("physicalcloud:transfer-concluido", (event) => {
@@ -336,22 +362,20 @@
         const cancelBtn = card.querySelector(".transfer-cancelar");
         if (cancelBtn) /** @type {HTMLElement} */ (cancelBtn).style.display = "none";
 
-        // Remove o card após 4 s
         setTimeout(() => {
           card.remove();
           cardsPorTransfer.delete(transferId);
+          amostrasVelocidade.delete(transferId);
           if (listaTransfers && listaTransfers.children.length === 0 && transfersAtivos) {
             transfersAtivos.style.display = "none";
           }
         }, 4000);
       }
 
-      // Adiciona ao histórico de recebidos
       if (direcao === "recebimento") {
         const item = document.createElement("div");
         item.className = "recebido-item";
 
-        // BUG 8 (XSS) CORRIGIDO: nome vem do dispositivo remoto — textContent, nunca innerHTML.
         const iconeRecebido = document.createElement("span");
         iconeRecebido.className = "recebido-icone";
         iconeRecebido.textContent = "⬇";
@@ -361,7 +385,7 @@
 
         const nomeRecebido = document.createElement("span");
         nomeRecebido.className = "recebido-nome";
-        nomeRecebido.textContent = nome; // ← textContent, nunca innerHTML
+        nomeRecebido.textContent = nome;
 
         const detalheRecebido = document.createElement("span");
         detalheRecebido.className = "recebido-detalhe";
@@ -386,6 +410,7 @@
         setTimeout(() => {
           card.remove();
           cardsPorTransfer.delete(transferId);
+          amostrasVelocidade.delete(transferId);
           if (listaTransfers && listaTransfers.children.length === 0 && transfersAtivos) {
             transfersAtivos.style.display = "none";
           }
@@ -404,6 +429,7 @@
         setTimeout(() => {
           card.remove();
           cardsPorTransfer.delete(transferId);
+          amostrasVelocidade.delete(transferId);
         }, 5000);
       }
     });

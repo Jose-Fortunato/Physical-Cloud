@@ -8,7 +8,7 @@ const STUN_SERVERS = [
 const NOME_CANAL = "physicalcloud";
 
 /**
- * @typedef {{ pc: RTCPeerConnection, dc: RTCDataChannel | null, estado: string, sessaoId: string, candidatosPendentes: RTCIceCandidateInit[], descricaoRemotaDefinida: boolean }} EntradaPeer
+ * @typedef {{ pc: RTCPeerConnection, dc: RTCDataChannel | null, estado: string, sessaoId: string, candidatosPendentes: RTCIceCandidateInit[], descricaoRemotaDefinida: boolean, everConnected: boolean }} EntradaPeer
  */
 
 /** @type {Map<string, EntradaPeer>} */
@@ -42,19 +42,18 @@ function atualizarEstadoPeer(sessaoId, estado) {
 function fecharPeer(sessaoId) {
     const entrada = peers.get(sessaoId);
     if (!entrada) return;
-    // Remove de peers ANTES de chamar pc.close() para que qualquer disparo síncrono
-    // de onconnectionstatechange causado pelo close() encontre peers.has() === false
-    // e não execute o bloco de cleanup novamente (sem loop infinito).
-    // Nota (5ª auditoria): browsers geralmente não disparam connectionstatechange ao
-    // chamar pc.close() quando o estado já é "failed", mas o guard acima cobre o caso
-    // de implementações que o fazem para "closed", garantindo idempotência.
+    // Remove de peers ANTES de chamar pc.close() para que qualquer disparo
+    // síncrono de onconnectionstatechange causado pelo close() encontre
+    // peers.has() === false e não execute o bloco de cleanup novamente.
     peers.delete(sessaoId);
     try { entrada.dc?.close(); } catch { /* ignorar */ }
     try { entrada.pc.close(); } catch { /* ignorar */ }
+    // [Fix.4/Item5] Emite "fechado" explicitamente — dc.onclose e
+    // onconnectionstatechange podem não disparar (canal já null ou close falhou).
+    atualizarEstadoPeer(sessaoId, "fechado");
 }
 
 /**
- * B2 CORRIGIDO: processa os ICE candidates que chegaram antes de setRemoteDescription terminar.
  * @param {EntradaPeer} entrada
  */
 async function processarCandidatosPendentes(entrada) {
@@ -67,6 +66,36 @@ async function processarCandidatosPendentes(entrada) {
         } catch (e) {
             console.warn("Falha ao adicionar ICE candidate pendente:", e);
         }
+    }
+}
+
+/**
+ * [Fix.4/C5] Consulta getStats() para confirmar tipo de conexão (host/srflx/relay).
+ * Retorna o candidateType do par nomeado vencedor, ou "desconhecido"/"erro".
+ * @param {RTCPeerConnection} pc
+ * @returns {Promise<string>}
+ */
+async function verificarConexaoDireta(pc) {
+    try {
+        const stats = await pc.getStats();
+        /** @type {any} */
+        let parNomeado = null;
+        stats.forEach(/** @param {any} report */ (report) => {
+            if (report.type === "candidate-pair" && report.nominated && report.state === "succeeded") {
+                parNomeado = report;
+            }
+        });
+        if (!parNomeado) return "desconhecido";
+        let tipoLocal = "desconhecido";
+        stats.forEach(/** @param {any} report */ (report) => {
+            if (report.type === "local-candidate" && report.id === parNomeado.localCandidateId) {
+                tipoLocal = report.candidateType || "desconhecido";
+            }
+        });
+        return tipoLocal;
+    } catch (e) {
+        console.warn("Erro ao verificar getStats:", e);
+        return "erro";
     }
 }
 
@@ -86,28 +115,18 @@ function configurarPc(pc, sessaoId) {
         atualizarEstadoPeer(sessaoId, estado);
 
         if (estado === "failed" || estado === "closed") {
-            // BUG MÉDIO CORRIGIDO (3ª auditoria): dispositivo local não via aviso ao perder conexão.
-            //
-            // Problema: api.encerrarSessao() chama sessoes.delete() localmente antes de enviar
-            // "encerrar" ao servidor. Quando o servidor responde "sessao-encerrada", o handler
-            // em PhysicalCloud.js encontra existia = false (já deletado) e não mostra aviso.
-            // Resultado: apenas o outro lado via a mensagem de encerramento — não o local.
-            //
-            // Solução: emite physicalcloud:aviso-local aqui (lado local que detectou a falha),
-            // ANTES de chamar encerrarSessao. PhysicalCloud.js ouve este evento e chama aviso().
-            // O handler de "sessao-encerrada" também pode chamar aviso() mas para motivos
-            // diferentes ("encerrado-pelo-dispositivo" → outro lado; este é o lado local).
-            // sessaoExiste calculado ANTES de fecharPeer — fecharPeer deleta de peers
-            // internamente antes de chamar pc.close(), então peers.has() seria false depois.
+            // [Fix.4/C4] Distinguir "caiu depois de conectar" de "nunca conectou".
+            const entrada = peers.get(sessaoId);
+            const estavaConectado = !!(entrada && entrada.everConnected);
             const sessaoExiste = peers.has(sessaoId);
             fecharPeer(sessaoId);
             if (sessaoExiste) {
-                // Aviso explícito para o lado local (quem detectou a falha WebRTC)
                 window.dispatchEvent(new CustomEvent("physicalcloud:aviso-local", {
-                    detail: { sessaoId, motivo: "conexao-perdida" },
+                    detail: {
+                        sessaoId,
+                        motivo: estavaConectado ? "conexao-perdida" : "conexao-nao-estabelecida",
+                    },
                 }));
-                // Notifica servidor — quando "sessao-encerrada" vier de volta,
-                // peers.has() === false então fecharPeer não roda de novo (sem double).
                 api.encerrarSessao(sessaoId);
             }
         }
@@ -131,11 +150,30 @@ function configurarDc(dc, sessaoId) {
         if (handshakeRecebido && handshakeEnviado) {
             atualizarEstadoPeer(sessaoId, "verificado");
             window.dispatchEvent(new CustomEvent("physicalcloud:canal-aberto", { detail: { sessaoId, dc } }));
+
+            // [Fix.4/C5] Verificação assíncrona pós-abertura — não bloqueia canal-aberto.
+            setTimeout(async () => {
+                const ent = peers.get(sessaoId);
+                if (!ent) return;
+                const tipo = await verificarConexaoDireta(ent.pc);
+                if (tipo === "relay") {
+                    window.dispatchEvent(new CustomEvent("physicalcloud:aviso-local", {
+                        detail: { sessaoId, motivo: "relay-detectado" },
+                    }));
+                }
+                window.dispatchEvent(new CustomEvent("physicalcloud:conexao-info", {
+                    detail: { sessaoId, tipo },
+                }));
+            }, 1000);
         }
     }
 
     dc.onopen = () => {
         atualizarEstadoPeer(sessaoId, "canal-aberto");
+        // [Fix.4/C4] Marca que o canal chegou a abrir para distinguir
+        // "perdeu conexão" de "nunca conseguiu conectar".
+        const ent = peers.get(sessaoId);
+        if (ent) ent.everConnected = true;
         try {
             dc.send(JSON.stringify({ type: "pc-ok" }));
             handshakeEnviado = true;
@@ -145,16 +183,6 @@ function configurarDc(dc, sessaoId) {
         verificar();
     };
 
-    // BUG 6 (MÉDIO) CORRIGIDO: usando addEventListener em vez de dc.onmessage.
-    //
-    // Problema anterior: PhysicalCloud-transfer.js sobrescrevia dc.onmessage ao receber
-    // "physicalcloud:canal-aberto" (disparado dentro de verificar() acima). Isso criava
-    // uma dependência de ordem: se o listener de transfer.js fosse registrado antes de
-    // configurarDc terminar, o onmessage original daqui seria perdido ou vice-versa.
-    //
-    // Solução: addEventListener("message") permite múltiplos handlers independentes.
-    // Este handler trata apenas "pc-ok" e delega o restante via CustomEvent.
-    // O handler de transfer.js adiciona seu próprio listener separado.
     dc.addEventListener("message", (event) => {
         if (typeof event.data === "string") {
             let msg;
@@ -164,27 +192,12 @@ function configurarDc(dc, sessaoId) {
                 verificar();
                 return;
             }
-            // Não re-despacha como CustomEvent — transfer.js usa seu próprio addEventListener
-            // e recebe a mensagem diretamente do dc. Evita despachar duas vezes.
         }
-        // ArrayBuffer: transfer.js trata diretamente via seu listener.
     });
 
     dc.onclose = () => {
         atualizarEstadoPeer(sessaoId, "canal-fechado");
     };
-
-    // Nota de extensibilidade (4ª auditoria): o evento genérico "physicalcloud:mensagem"
-    // que existia em versões anteriores foi removido intencionalmente. Ele re-despachava
-    // toda mensagem do DataChannel como CustomEvent, criando overhead e acoplamento.
-    //
-    // Módulos futuros (Bloco C e além) que precisem ouvir mensagens do canal devem:
-    //   1. Ouvir "physicalcloud:canal-aberto" para obter referência ao dc.
-    //   2. Registrar seu próprio dc.addEventListener("message", handler) diretamente.
-    //   3. Filtrar pelo prefixo/type relevante (ex.: msg.type.startsWith("chat-")).
-    //
-    // Este padrão evita intermediários e garante que cada módulo trate exatamente
-    // as mensagens que lhe pertencem, sem dependência de ordem de carregamento.
 
     dc.onerror = (event) => {
         console.error(`DataChannel erro (sessão ${sessaoId}):`, event);
@@ -193,7 +206,7 @@ function configurarDc(dc, sessaoId) {
 }
 
 /**
- * Esta ponta é o CLIENTE — cria RTCPeerConnection, DataChannel, gera e envia offer.
+ * Esta ponta é o CLIENTE.
  * @param {string} sessaoId
  */
 async function iniciarComoCliente(sessaoId) {
@@ -201,13 +214,12 @@ async function iniciarComoCliente(sessaoId) {
 
     const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
     /** @type {EntradaPeer} */
-    const entrada = { pc, dc: null, estado: "iniciando", sessaoId, candidatosPendentes: [], descricaoRemotaDefinida: false };
+    const entrada = { pc, dc: null, estado: "iniciando", sessaoId, candidatosPendentes: [], descricaoRemotaDefinida: false, everConnected: false };
     peers.set(sessaoId, entrada);
 
     configurarPc(pc, sessaoId);
 
     const dc = pc.createDataChannel(NOME_CANAL, { ordered: true });
-    // BUG 6 CORRIGIDO (versão anterior): configurarDc já faz entrada.dc = dc internamente.
     configurarDc(dc, sessaoId);
 
     try {
@@ -222,7 +234,7 @@ async function iniciarComoCliente(sessaoId) {
 }
 
 /**
- * Esta ponta é o SERVIDOR — cria RTCPeerConnection e aguarda offer via sinal.
+ * Esta ponta é o SERVIDOR.
  * @param {string} sessaoId
  */
 function prepararComoServidor(sessaoId) {
@@ -230,21 +242,17 @@ function prepararComoServidor(sessaoId) {
 
     const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
     /** @type {EntradaPeer} */
-    const entrada = { pc, dc: null, estado: "aguardando-offer", sessaoId, candidatosPendentes: [], descricaoRemotaDefinida: false };
+    const entrada = { pc, dc: null, estado: "aguardando-offer", sessaoId, candidatosPendentes: [], descricaoRemotaDefinida: false, everConnected: false };
     peers.set(sessaoId, entrada);
 
     configurarPc(pc, sessaoId);
 
     pc.ondatachannel = (event) => {
-        // BUG 4 (BAIXO) CORRIGIDO: entrada.dc = event.channel era redundante aqui.
-        // configurarDc() já faz entrada.dc = dc internamente na primeira linha.
-        // A atribuição extra depois não causava bug visível mas era código enganoso.
         configurarDc(event.channel, sessaoId);
     };
 }
 
 /**
- * Processa uma mensagem de sinalização recebida via WebSocket e repassa ao RTCPeerConnection.
  * @param {string} sessaoId
  * @param {{ tipo: string, sdp?: string, candidate?: RTCIceCandidateInit }} dados
  */
@@ -259,7 +267,6 @@ async function processarSinal(sessaoId, dados) {
         try {
             await pc.setRemoteDescription({ type: "offer", sdp: dados.sdp });
             entrada.descricaoRemotaDefinida = true;
-            // B2: processa candidates que chegaram antes do offer
             await processarCandidatosPendentes(entrada);
 
             const answer = await pc.createAnswer();
@@ -278,7 +285,6 @@ async function processarSinal(sessaoId, dados) {
         try {
             await pc.setRemoteDescription({ type: "answer", sdp: dados.sdp });
             entrada.descricaoRemotaDefinida = true;
-            // B2: processa candidates que chegaram antes do answer
             await processarCandidatosPendentes(entrada);
 
             atualizarEstadoPeer(sessaoId, "conectando");
@@ -292,7 +298,6 @@ async function processarSinal(sessaoId, dados) {
     if (dados.tipo === "ice") {
         if (!dados.candidate) return;
         if (!entrada.descricaoRemotaDefinida) {
-            // B2: descrição remota ainda não chegou — guarda para depois
             entrada.candidatosPendentes.push(dados.candidate);
             return;
         }
