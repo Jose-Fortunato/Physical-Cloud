@@ -10,7 +10,12 @@
 
   <div class="app">
 
-    <aside class="sidebar">
+    <!-- Botão hambúrguer para mobile -->
+    <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Menu">&#9776;</button>
+    <!-- Overlay para fechar sidebar no mobile -->
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <aside class="sidebar" id="sidebar">
       <div class="sidebar-logo">
         <svg class="logo-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M6.5 18.5C4.01 18.5 2 16.49 2 14C2 11.76 3.64 9.9 5.79 9.56C6.32 7.22 8.41 5.5 10.9 5.5C13.61 5.5 15.85 7.49 16.22 10.08C18.36 10.36 20 12.18 20 14.4C20 16.81 18.04 18.77 15.63 18.77H6.5V18.5Z" fill="currentColor"/>
@@ -44,11 +49,42 @@
 
       <section id="nuvem" class="tab-panel">
         <h1>Nuvem</h1>
-        <p class="subtitle">Seus arquivos enviados aparecem aqui.</p>
+        <p class="subtitle">Envie e receba arquivos diretamente entre dispositivos via P2P.</p>
 
-        <div class="empty-state">
-          <p>Nenhum arquivo enviado ainda.</p>
-          <button class="primary-btn" id="btn-enviar">Enviar arquivo</button>
+        <!-- Estado: sem dispositivos conectados -->
+        <div id="nuvem-sem-canal" class="empty-state">
+          <p>Nenhum dispositivo conectado.<br>Conecte um dispositivo primeiro.</p>
+          <button class="primary-btn" id="btn-ir-dispositivos">Ver dispositivos</button>
+        </div>
+
+        <!-- Estado: com dispositivos conectados -->
+        <div id="nuvem-com-canal" style="display:none">
+
+          <!-- Seletor de destino (visível quando há mais de uma sessão) -->
+          <div id="destino-container" class="destino-container" style="display:none">
+            <label class="destino-label" for="destino-select">Enviar para:</label>
+            <select id="destino-select" class="destino-select"></select>
+          </div>
+
+          <!-- Botão de enviar -->
+          <div class="nuvem-acoes">
+            <button class="primary-btn" id="btn-enviar">
+              <span class="btn-icon">&#8679;</span> Enviar arquivo
+            </button>
+          </div>
+
+          <!-- Transferências em andamento -->
+          <div id="transfers-ativos" style="display:none">
+            <h2 class="section-title">Em andamento</h2>
+            <div id="lista-transfers" class="lista-transfers"></div>
+          </div>
+
+          <!-- Histórico de recebidos -->
+          <div id="recebidos-container" style="display:none">
+            <h2 class="section-title">Recebidos nesta sessão</h2>
+            <div id="lista-recebidos" class="lista-recebidos"></div>
+          </div>
+
         </div>
       </section>
 
@@ -62,7 +98,9 @@
       <button class="modal-close" id="btn-fechar-modal">&times;</button>
       <h2>Seu dispositivo virou o servidor</h2>
       <p class="subtitle">Use este código no outro dispositivo para conectar:</p>
-      <div class="codigo-display" id="codigo-texto">------</div>
+      <!-- BUG 5 CORRIGIDO: aria-hidden evita que leitores de tela leiam "------" antes do código chegar.
+           O elemento continua existindo para o JS atualizar o textContent, mas é invisível e mudo para assistive tech. -->
+      <div class="codigo-display" id="codigo-texto" aria-hidden="true"></div>
       <div class="code-container">
         <div class="code-digit"></div>
         <div class="code-digit"></div>
@@ -94,5 +132,281 @@
 
   <script src="PhysicalCloud.js"></script>
   <script src="PhysicalCloud-webrtc.js"></script>
+  <script src="PhysicalCloud-transfer.js"></script>
+  <script>
+    // ─── Sidebar mobile ───────────────────────────────────────────────────────
+    const sidebar = document.getElementById("sidebar");
+    const sidebarToggle = document.getElementById("sidebar-toggle");
+    const sidebarOverlay = document.getElementById("sidebar-overlay");
+
+    sidebarToggle?.addEventListener("click", () => {
+      sidebar?.classList.toggle("open");
+      sidebarOverlay?.classList.toggle("active");
+    });
+    sidebarOverlay?.addEventListener("click", () => {
+      sidebar?.classList.remove("open");
+      sidebarOverlay?.classList.remove("active");
+    });
+    // Fecha sidebar ao navegar (mobile)
+    document.querySelectorAll(".nav-item[data-tab]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        sidebar?.classList.remove("open");
+        sidebarOverlay?.classList.remove("active");
+      });
+    });
+
+    // ─── Aba Nuvem: estado (com/sem canal) ───────────────────────────────────
+    const nuvemSemCanal  = document.getElementById("nuvem-sem-canal");
+    const nuvemComCanal  = document.getElementById("nuvem-com-canal");
+    const destinoContainer = document.getElementById("destino-container");
+    const destinoSelect  = /** @type {HTMLSelectElement} */ (document.getElementById("destino-select"));
+    const transfersAtivos = document.getElementById("transfers-ativos");
+    const listaTransfers  = document.getElementById("lista-transfers");
+    const recebidosContainer = document.getElementById("recebidos-container");
+    const listaRecebidos  = document.getElementById("lista-recebidos");
+
+    document.getElementById("btn-ir-dispositivos")?.addEventListener("click", () => {
+      document.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+      document.querySelector(".nav-item[data-tab='dispositivos']")?.classList.add("active");
+      document.getElementById("dispositivos")?.classList.add("active");
+    });
+
+    function atualizarEstadoNuvem() {
+      const t = /** @type {any} */ (window).PhysicalCloudTransfer;
+      const canais = t ? t.canais : new Map();
+      const temCanal = canais && canais.size > 0;
+
+      if (nuvemSemCanal)  nuvemSemCanal.style.display  = temCanal ? "none" : "";
+      if (nuvemComCanal)  nuvemComCanal.style.display   = temCanal ? "" : "none";
+
+      if (!temCanal || !destinoContainer || !destinoSelect) return;
+
+      // Atualiza seletor de destino
+      const sessaoIds = Array.from(canais.keys());
+      if (sessaoIds.length > 1) {
+        destinoContainer.style.display = "";
+        const sessoes = /** @type {any} */ (window).PhysicalCloud?.sessoes;
+        destinoSelect.innerHTML = "";
+        for (const sid of sessaoIds) {
+          const opt = document.createElement("option");
+          opt.value = sid;
+          const s = sessoes?.get(sid);
+          opt.textContent = s ? s.nome : sid.slice(0, 8) + "…";
+          destinoSelect.appendChild(opt);
+        }
+      } else {
+        destinoContainer.style.display = "none";
+      }
+    }
+
+    // Atualiza quando canais abrem/fecham
+    window.addEventListener("physicalcloud:canal-aberto",    atualizarEstadoNuvem);
+    window.addEventListener("physicalcloud:sessao-encerrada", atualizarEstadoNuvem);
+    // Atualiza ao trocar para aba Nuvem
+    document.querySelectorAll(".nav-item[data-tab='nuvem']").forEach(btn => {
+      btn.addEventListener("click", atualizarEstadoNuvem);
+    });
+
+    // ─── Botão Enviar arquivo ─────────────────────────────────────────────────
+    document.getElementById("btn-enviar")?.addEventListener("click", () => {
+      const t = /** @type {any} */ (window).PhysicalCloudTransfer;
+      if (!t || t.canais.size === 0) {
+        window.dispatchEvent(new CustomEvent("physicalcloud:transfer-sem-canal"));
+        return;
+      }
+      window.dispatchEvent(new CustomEvent("physicalcloud:solicitar-envio"));
+    });
+
+    // Quando há mais de um canal e o usuário precisa escolher o destino
+    window.addEventListener("physicalcloud:escolher-destino", (event) => {
+      const { arquivos, sessaoIds } = /** @type {CustomEvent} */ (event).detail;
+      // Usa o destino selecionado no select
+      const sid = destinoSelect?.value || sessaoIds[0];
+      const t = /** @type {any} */ (window).PhysicalCloudTransfer;
+      if (t) t.enfileirarArquivos(sid, arquivos);
+    });
+
+    // ─── Sem canal ────────────────────────────────────────────────────────────
+    window.addEventListener("physicalcloud:transfer-sem-canal", () => {
+      // Redireciona para aba dispositivos
+      document.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+      document.querySelector(".nav-item[data-tab='dispositivos']")?.classList.add("active");
+      document.getElementById("dispositivos")?.classList.add("active");
+    });
+
+    // ─── UI de progresso ─────────────────────────────────────────────────────
+
+    /** @type {Map<string, HTMLElement>} */
+    const cardsPorTransfer = new Map();
+
+    function formatarBytes(bytes) {
+      if (bytes < 1024) return bytes + " B";
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+      return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+    }
+
+    window.addEventListener("physicalcloud:transfer-inicio", (event) => {
+      const { transferId, sessaoId, nome, tamanho, direcao } = /** @type {CustomEvent} */ (event).detail;
+
+      const card = document.createElement("div");
+      card.className = "transfer-card";
+      card.dataset.transferId = transferId;
+
+      const icone = direcao === "envio" ? "↑" : "↓";
+      const corIcone = direcao === "envio" ? "#39ff8f" : "#4db8ff";
+
+      // BUG 3 + 8 (XSS) CORRIGIDO: nome vem do dispositivo remoto — nunca interpolado em innerHTML.
+      // Usamos createElement + textContent para todos os campos de origem externa.
+      const header = document.createElement("div");
+      header.className = "transfer-header";
+
+      const iconeEl = document.createElement("span");
+      iconeEl.className = "transfer-icone";
+      iconeEl.style.color = corIcone;
+      iconeEl.textContent = icone;
+
+      const nomeEl = document.createElement("span");
+      nomeEl.className = "transfer-nome";
+      nomeEl.textContent = nome; // ← textContent, nunca innerHTML
+
+      const tamanhoEl = document.createElement("span");
+      tamanhoEl.className = "transfer-tamanho";
+      tamanhoEl.textContent = formatarBytes(tamanho);
+
+      const cancelBtn = document.createElement("button");
+      cancelBtn.className = "transfer-cancelar";
+      cancelBtn.title = "Cancelar";
+      cancelBtn.textContent = "✕";
+      cancelBtn.addEventListener("click", () => {
+        const t = /** @type {any} */ (window).PhysicalCloudTransfer;
+        if (t) t.cancelarTransferencia(sessaoId);
+      });
+
+      header.appendChild(iconeEl);
+      header.appendChild(nomeEl);
+      header.appendChild(tamanhoEl);
+      header.appendChild(cancelBtn);
+
+      const barraContainer = document.createElement("div");
+      barraContainer.className = "transfer-barra-container";
+      const barra = document.createElement("div");
+      barra.className = "transfer-barra";
+      barra.style.width = "0%";
+      barraContainer.appendChild(barra);
+
+      const statusEl = document.createElement("div");
+      statusEl.className = "transfer-status";
+      statusEl.textContent = "Iniciando…";
+
+      card.appendChild(header);
+      card.appendChild(barraContainer);
+      card.appendChild(statusEl);
+
+      cardsPorTransfer.set(transferId, card);
+      if (listaTransfers) listaTransfers.appendChild(card);
+      if (transfersAtivos) transfersAtivos.style.display = "";
+    });
+
+    window.addEventListener("physicalcloud:transfer-progresso", (event) => {
+      const { transferId, enviados, total } = /** @type {CustomEvent} */ (event).detail;
+      const card = cardsPorTransfer.get(transferId);
+      if (!card) return;
+
+      const pct = total > 0 ? Math.round((enviados / total) * 100) : 0;
+      const barra = /** @type {HTMLElement | null} */ (card.querySelector(".transfer-barra"));
+      const status = card.querySelector(".transfer-status");
+
+      if (barra) barra.style.width = pct + "%";
+      if (status) status.textContent = `${pct}% — ${formatarBytes(enviados)} / ${formatarBytes(total)}`;
+    });
+
+    window.addEventListener("physicalcloud:transfer-concluido", (event) => {
+      const { transferId, nome, tamanho, direcao } = /** @type {CustomEvent} */ (event).detail;
+      const card = cardsPorTransfer.get(transferId);
+      if (card) {
+        const barra = /** @type {HTMLElement | null} */ (card.querySelector(".transfer-barra"));
+        if (barra) {
+          barra.style.width = "100%";
+          barra.style.background = "#39ff8f";
+        }
+        const status = card.querySelector(".transfer-status");
+        if (status) status.textContent = direcao === "envio" ? "Enviado com sucesso ✓" : "Recebido com sucesso ✓";
+        const cancelBtn = card.querySelector(".transfer-cancelar");
+        if (cancelBtn) /** @type {HTMLElement} */ (cancelBtn).style.display = "none";
+
+        // Remove o card após 4 s
+        setTimeout(() => {
+          card.remove();
+          cardsPorTransfer.delete(transferId);
+          if (listaTransfers && listaTransfers.children.length === 0 && transfersAtivos) {
+            transfersAtivos.style.display = "none";
+          }
+        }, 4000);
+      }
+
+      // Adiciona ao histórico de recebidos
+      if (direcao === "recebimento") {
+        const item = document.createElement("div");
+        item.className = "recebido-item";
+
+        // BUG 8 (XSS) CORRIGIDO: nome vem do dispositivo remoto — textContent, nunca innerHTML.
+        const iconeRecebido = document.createElement("span");
+        iconeRecebido.className = "recebido-icone";
+        iconeRecebido.textContent = "⬇";
+
+        const infoDiv = document.createElement("div");
+        infoDiv.className = "recebido-info";
+
+        const nomeRecebido = document.createElement("span");
+        nomeRecebido.className = "recebido-nome";
+        nomeRecebido.textContent = nome; // ← textContent, nunca innerHTML
+
+        const detalheRecebido = document.createElement("span");
+        detalheRecebido.className = "recebido-detalhe";
+        detalheRecebido.textContent = formatarBytes(tamanho) + " · salvo";
+
+        infoDiv.appendChild(nomeRecebido);
+        infoDiv.appendChild(detalheRecebido);
+        item.appendChild(iconeRecebido);
+        item.appendChild(infoDiv);
+
+        if (listaRecebidos) listaRecebidos.prepend(item);
+        if (recebidosContainer) recebidosContainer.style.display = "";
+      }
+    });
+
+    window.addEventListener("physicalcloud:transfer-cancelado", (event) => {
+      const { transferId } = /** @type {CustomEvent} */ (event).detail;
+      const card = cardsPorTransfer.get(transferId);
+      if (card) {
+        const status = card.querySelector(".transfer-status");
+        if (status) status.textContent = "Cancelado.";
+        setTimeout(() => {
+          card.remove();
+          cardsPorTransfer.delete(transferId);
+          if (listaTransfers && listaTransfers.children.length === 0 && transfersAtivos) {
+            transfersAtivos.style.display = "none";
+          }
+        }, 2000);
+      }
+    });
+
+    window.addEventListener("physicalcloud:transfer-erro", (event) => {
+      const { transferId, motivo } = /** @type {CustomEvent} */ (event).detail;
+      const card = cardsPorTransfer.get(transferId);
+      if (card) {
+        const barra = /** @type {HTMLElement | null} */ (card.querySelector(".transfer-barra"));
+        if (barra) barra.style.background = "#ff4444";
+        const status = card.querySelector(".transfer-status");
+        if (status) status.textContent = "Erro: " + motivo;
+        setTimeout(() => {
+          card.remove();
+          cardsPorTransfer.delete(transferId);
+        }, 5000);
+      }
+    });
+  </script>
 </body>
 </html>

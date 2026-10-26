@@ -220,6 +220,8 @@ document.querySelectorAll(".nav-item[data-tab]").forEach(btn => {
 let elContagem = null;
 /** @type {HTMLButtonElement | null} */
 let btnNovoCodigo = null;
+/** @type {HTMLButtonElement | null} */
+let btnPararServidor = null; // promovido a módulo para permitir remoção futura
 let fimCodigo = 0;
 /** @type {ReturnType<typeof setInterval> | null} */
 let timerCodigo = null;
@@ -247,7 +249,23 @@ function prepararExtrasDoModalCodigo() {
         }
     });
 
-    codigoTexto.parentElement?.append(elContagem, btnNovoCodigo);
+    // BUG CORRIGIDO (3ª auditoria): btnPararServidor promovido a variável de módulo
+    // (era const local, sem referência externa para remoção posterior).
+    btnPararServidor = document.createElement("button");
+    btnPararServidor.type = "button";
+    btnPararServidor.id = "btn-parar-servidor";
+    btnPararServidor.textContent = "Parar de ser servidor";
+    Object.assign(btnPararServidor.style, {
+        background: "transparent", color: "#ff6b6b", border: "1px solid #ff6b6b",
+        borderRadius: "8px", padding: "6px 14px", cursor: "pointer",
+        display: "block", margin: "8px auto 0", fontSize: "13px",
+    });
+    btnPararServidor.addEventListener("click", () => {
+        pararServidor();
+        aviso("Este dispositivo não é mais servidor. Recarregue para conectar como cliente.");
+    });
+
+    codigoTexto.parentElement?.append(elContagem, btnNovoCodigo, btnPararServidor);
 }
 
 function mostrarDigitos(codigo = "") {
@@ -472,6 +490,30 @@ document.getElementById("btn-tornar-servidor")?.addEventListener("click", () => 
     telaDeCodigo?.classList.remove("active");
 });
 
+// Permite parar de ser servidor (reseta souServidor para false e encerra sessões).
+// Exposto globalmente para uso por outros módulos ou pela UI no Bloco C.
+function pararServidor() {
+    souServidor = false;
+    meuCodigoServidor = null;
+    pararContagem();
+    mostrarDigitos("");
+    telaDeCodigo?.classList.remove("active");
+
+    // BUG CORRIGIDO (3ª auditoria): encerra sessões ativas em que este dispositivo
+    // é servidor. Sem isso, clientes continuavam aparecendo como "Online" mesmo após
+    // "Parar de ser servidor" — e o servidor WebSocket mantinha as sessões abertas.
+    //
+    // BUG CORRIGIDO (4ª auditoria): iterar sessoes com for...of enquanto encerrarSessao
+    // chama sessoes.delete() é seguro para entradas já visitadas, mas pode pular entradas
+    // ainda não visitadas se elas forem deletadas por efeito colateral. Solução: coleta
+    // os IDs primeiro, depois itera sobre o array estático.
+    const idsServidor = [...sessoes.entries()]
+        .filter(([, s]) => s.papel === "servidor")
+        .map(([id]) => id);
+    for (const id of idsServidor) encerrarSessao(id);
+}
+/** @type {any} */ (window).__pararServidor = pararServidor;
+
 document.getElementById("btn-conectar")?.addEventListener("click", abrirModalConectar);
 document.getElementById("btn-conectar-extra")?.addEventListener("click", abrirModalConectar);
 
@@ -484,9 +526,9 @@ fecharModal?.addEventListener("click", () => {
     telaDeCodigo?.classList.remove("active");
 });
 
-document.getElementById("btn-enviar")?.addEventListener("click", () => {
-    aviso("Transferência de arquivos será implementada na próxima etapa.");
-});
+// BUG 11 CORRIGIDO: listener do #btn-enviar removido daqui.
+// O dispatch de physicalcloud:solicitar-envio fica APENAS no index.html,
+// que já verifica se há canal aberto antes de emitir — evitando duplo dispatch.
 
 
 // ─── Mensagens recebidas do servidor WebSocket ────────────────────────────────
@@ -629,7 +671,9 @@ function conectarSocket() {
         }
 
         if (souServidor) {
-            abrirModalAoGerar = false;
+            // B5 CORRIGIDO: ao reconectar como servidor, reabre o modal com o novo código
+            // para o usuário não ficar sem saber qual código compartilhar.
+            abrirModalAoGerar = true;
             enviar({ type: "tornar-servidor", deviceId: obterDeviceId() });
         }
     });
@@ -651,6 +695,11 @@ function conectarSocket() {
         mostrarDigitos("");
         telaDeCodigo?.classList.remove("active");
 
+        // B4 CORRIGIDO: dispara sessao-encerrada para cada sessão antes de limpar o Map,
+        // para que PhysicalCloud-webrtc.js possa fechar os RTCPeerConnections corretamente.
+        for (const [sessaoId] of sessoes) {
+            window.dispatchEvent(new CustomEvent("physicalcloud:sessao-encerrada", { detail: { sessaoId } }));
+        }
         sessoes.clear();
         atualizarListaDispositivos();
 
@@ -681,7 +730,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 
-// ─── API para etapas futuras (WebRTC) ─────────────────────────────────────────
+// ─── API para módulos externos (WebRTC, Transfer) ─────────────────────────────
 
 /**
  * @param {string} sessaoId
@@ -692,6 +741,27 @@ function encerrarSessao(sessaoId) {
     atualizarListaDispositivos();
 }
 
-/** @type {any} */ (window).PhysicalCloud = { enviar, sessoes, obterDeviceId, encerrarSessao };
+// ─── Listener: aviso local quando peer WebRTC falha neste dispositivo ────────
+//
+// webrtc.js emite este evento ao detectar connectionState "failed" ou "closed"
+// ANTES de chamar encerrarSessao. Isso garante que o dispositivo que teve a
+// falha veja o aviso na tela — encerrarSessao chama sessoes.delete() localmente,
+// então quando "sessao-encerrada" chega de volta do servidor, existia = false
+// e o aviso normal não seria exibido.
+//
+// BUG CORRIGIDO (4ª auditoria): aviso era genérico ("A conexão com o dispositivo
+// foi perdida") sem identificar qual dispositivo caiu. Com múltiplos dispositivos,
+// o usuário não sabia qual conexão foi perdida. Corrigido buscando sessoes.get()
+// pelo sessaoId para exibir o nome do dispositivo.
+window.addEventListener("physicalcloud:aviso-local", (event) => {
+    const { sessaoId, motivo } = /** @type {CustomEvent} */ (event).detail;
+    if (motivo === "conexao-perdida") {
+        const s = sessaoId ? sessoes.get(String(sessaoId)) : undefined;
+        const nome = s?.nome || "Dispositivo";
+        aviso(`A conexão com ${nome} foi perdida.`);
+    }
+});
+
+/** @type {any} */ (window).PhysicalCloud = { enviar, sessoes, obterDeviceId, encerrarSessao, aviso };
 
 conectarSocket();
