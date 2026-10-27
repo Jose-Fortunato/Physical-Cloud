@@ -31,6 +31,9 @@
 
       <section id="dispositivos" class="tab-panel active">
         <h1>Dispositivos conectados</h1>
+         <div class="aviso-web">
+          <strong>⚠️ Versão Web:</strong> Para manter a conexão ativa ao trocar de app no celular, vá nas configurações do Chrome e desative a "Otimização de bateria" para este site. Para controle total de pastas e conexões em segundo plano, a versão App estará disponível em breve.
+        </div>
         <p class="subtitle">Conecte um celular, computador ou notebook para começar a trocar arquivos.</p>
 
         <div class="device-actions" id="device-actions" style="display:none">
@@ -113,6 +116,23 @@
         <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="code-input-box" data-index="3">
         <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="code-input-box" data-index="4">
         <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="code-input-box" data-index="5">
+      </div>
+    </div>
+  </div>
+    <!-- Modal de Confirmação de Recebimento (Bloco C.1) -->
+  <div class="modal-overlay" id="modal-recebimento">
+    <div class="modal-box">
+      <h2>Receber arquivo?</h2>
+      <p class="subtitle" id="recebimento-texto">Um dispositivo quer enviar um arquivo.</p>
+      
+      <div class="recebimento-info" style="background: #121212; padding: 12px; border-radius: 8px; margin-bottom: 24px; border: 1px solid #2a2a2a;">
+        <div style="font-weight: 600; color: #fff;" id="recebimento-nome">arquivo.zip</div>
+        <div style="font-size: 12px; color: #9a9a9a; margin-top: 4px;" id="recebimento-tamanho">0 MB</div>
+      </div>
+
+      <div style="display: flex; gap: 12px; justify-content: center;">
+        <button class="primary-btn" id="btn-aceitar-recebimento">Aceitar e Salvar</button>
+        <button class="secondary-btn" id="btn-recusar-recebimento" style="color: #ff6b6b; border-color: #ff6b6b;">Recusar</button>
       </div>
     </div>
   </div>
@@ -432,6 +452,39 @@
           amostrasVelocidade.delete(transferId);
         }, 5000);
       }
+    });
+        // ─── Bloco C.1: Confirmação de Recebimento ──────────────────────────────
+    let ofertaAtual = null;
+    const modalRecebimento = document.getElementById("modal-recebimento");
+    const textoRecebimento = document.getElementById("recebimento-texto");
+    const nomeRecebimento = document.getElementById("recebimento-nome");
+    const tamanhoRecebimento = document.getElementById("recebimento-tamanho");
+
+    window.addEventListener("physicalcloud:recebimento-pendente", (event) => {
+      const { transferId, nome, tamanho, nomeRemetente } = event.detail;
+      ofertaAtual = transferId;
+
+      textoRecebimento.textContent = `"${nomeRemetente}" quer enviar o arquivo:`;
+      nomeRecebimento.textContent = nome;
+      
+      if (tamanho < 1024 * 1024) tamanhoRecebimento.textContent = (tamanho / 1024).toFixed(1) + " KB";
+      else tamanhoRecebimento.textContent = (tamanho / (1024 * 1024)).toFixed(1) + " MB";
+
+      modalRecebimento.classList.add("active");
+    });
+
+    document.getElementById("btn-aceitar-recebimento")?.addEventListener("click", () => {
+      modalRecebimento.classList.remove("active");
+      const t = /** @type {any} */ (window).PhysicalCloudTransfer;
+      if (t && ofertaAtual) t.aceitarRecebimento(ofertaAtual);
+      ofertaAtual = null;
+    });
+
+    document.getElementById("btn-recusar-recebimento")?.addEventListener("click", () => {
+      modalRecebimento.classList.remove("active");
+      const t = /** @type {any} */ (window).PhysicalCloudTransfer;
+      if (t && ofertaAtual) t.recusarRecebimento(ofertaAtual);
+      ofertaAtual = null;
     });
   </script>
 </body>
