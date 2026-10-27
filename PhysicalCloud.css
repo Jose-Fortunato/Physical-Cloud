@@ -610,6 +610,8 @@ body {
 
 /* ─── [Fix.5] Responsivo ────────────────────────────────────────────────────── */
 
+/* ─── Responsivo ────────────────────────────────────────────────────────────── */
+
 @media (max-width: 768px) {
   .sidebar-toggle {
     display: block;
@@ -639,5 +641,55 @@ body {
     right: 16px;
     padding: 12px 20px;
     font-size: 14px;
+  }
+
+  /* Ajustes da aba Nuvem no celular */
+  .destino-container {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .nuvem-acoes {
+    flex-direction: column;
+  }
+
+  .nuvem-acoes .primary-btn {
+    width: 100%;
+  }
+
+  .transfer-header {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .transfer-nome {
+    flex: 1 1 calc(100% - 80px); /* Deixa espaço para o ícone e o botão X */
+    margin-bottom: 4px;
+  }
+
+  .transfer-tamanho {
+    flex: 1 1 100%;
+    text-align: right;
+    padding-left: 32px; /* Alinha o texto embaixo do nome */
+  }
+
+  .transfer-cancelar {
+    margin-left: auto;
+  }
+
+  .transfer-status {
+    white-space: normal; /* Permite quebrar a linha do progresso */
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  .device-card {
+    flex-wrap: wrap;
+  }
+  
+  .device-btn-encerrar {
+    margin-left: 36px; /* Alinha embaixo do nome */
+    width: calc(100% - 36px);
   }
 }
