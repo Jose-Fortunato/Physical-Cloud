@@ -23,7 +23,7 @@
 
       <nav class="sidebar-nav">
         <button class="nav-item active" data-tab="dispositivos">Dispositivos conectados</button>
-        <button class="nav-item" data-tab="nuvem">Nuvem</button>
+        <button class="nav-item" data-tab="nuvem">Arquivosq</button>
       </nav>
     </aside>
 
@@ -136,7 +136,40 @@
       </div>
     </div>
   </div>
+  <!-- Modal de Feedback (Estrelas e Comentário) -->
+  <div class="modal-overlay" id="modal-feedback">
+    <div class="modal-box" style="text-align: left;">
+      <button class="modal-close" id="btn-fechar-feedback">&times;</button>
+      <h2>Avalie o Physical Cloud</h2>
+      <p class="subtitle">Sua opinião nos ajuda a melhorar.</p>
+      
+      <div class="star-rating" id="star-rating" style="margin-bottom: 16px;">
+        <span class="star" data-value="1">★</span>
+        <span class="star" data-value="2">★</span>
+        <span class="star" data-value="3">★</span>
+        <span class="star" data-value="4">★</span>
+        <span class="star" data-value="5">★</span>
+      </div>
+      
+      <label style="display: block; font-size: 14px; margin-bottom: 8px; color: #9a9a9a;">Categoria:</label>
+      <select id="feedback-categoria" class="destino-select" style="width: 100%; margin-bottom: 16px;">
+        <option value="sugestao">Sugestão de melhoria</option>
+        <option value="bug">Relatar um bug</option>
+        <option value="usabilidade">Problema de usabilidade</option>
+        <option value="outro">Outro</option>
+      </select>
 
+      <textarea id="feedback-texto" placeholder="Conte-nos o que aconteceu ou sua sugestão..." style="width: 100%; height: 100px; background: #121212; border: 1px solid #2a2a2a; border-radius: 8px; padding: 12px; color: #fff; font-family: inherit; resize: vertical; margin-bottom: 16px;"></textarea>
+
+      <div style="display: flex; gap: 12px; justify-content: flex-end;">
+        <button class="secondary-btn" id="btn-enviar-feedback">Enviar Feedback</button>
+      </div>
+      <p id="feedback-status" style="font-size: 12px; margin-top: 12px; display: none;"></p>
+    </div>
+  </div>
+
+  <!-- Botão de Acesso ao Feedback (Discreto, fixo no rodapé da sidebar) -->
+  <button class="nav-item" id="btn-abrir-feedback" style="margin-top: auto; border-top: 1px solid #2a2a2a; color: #9a9a9a; font-size: 12px;">★ Avaliar o App</button>
   <button class="btn-tornar-servidor" id="btn-tornar-servidor">Se tornar o dispositivo servidor</button>
 
   <script src="PhysicalCloud.js"></script>

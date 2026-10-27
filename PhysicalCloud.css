@@ -708,4 +708,26 @@ body {
 /* ─── Modal de Recebimento (Bloco C.1) ───────────────────────────────────── */
 #modal-recebimento .modal-box {
   max-width: 420px;
+}/* ─── Feedback e Estrelas ────────────────────────────────────────────────── */
+.star-rating {
+  display: flex;
+  gap: 8px;
+  font-size: 32px;
+  cursor: pointer;
+}
+.star {
+  color: #444;
+  transition: color 0.15s ease, transform 0.1s ease;
+}
+.star:hover {
+  transform: scale(1.1);
+}
+
+/* Ajuste na sidebar para o botão de feedback ficar no rodapé */
+.sidebar {
+  justify-content: flex-start;
+}
+#btn-abrir-feedback {
+  margin-top: auto !important;
+  border-top: 1px solid #2a2a2a !important;
 }
