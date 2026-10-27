@@ -1,764 +1,837 @@
 // @ts-check
+// PhysicalCloud-transfer.js — Etapa 3: Transferência P2P de arquivos
 
-const URL_SERVIDOR = "wss://physical-cloud-server.onrender.com";
-const TEMPO_PEDIDO_S = 60;
+// @ts-ignore
+const TAMANHO_CHUNK = 256 * 1024;
+const BUFFER_ALTO   = 4 * 1024 * 1024;
+const BUFFER_BAIXO  = 512 * 1024;
+const TIMEOUT_ACEITE_MS = 30000;   // [Fix.10] timeout do file-accept
+const TIMEOUT_OK_MS     = 60000;   // [Fix.12] timeout do file-ok/file-error
 
-const telaDeCodigo        = document.getElementById("modal-codigo");
-const codigoTexto         = document.getElementById("codigo-texto");
-const fecharModal         = document.getElementById("btn-fechar-modal");
-const telaDeConectar      = document.getElementById("modal-conectar");
-const fecharModalConectar = document.getElementById("btn-fechar-conectar");
+if (!(/** @type {any} */ (window).PhysicalCloud)) {
+    console.error("PhysicalCloud-transfer.js: window.PhysicalCloud não encontrado.");
+}
 
-/** @type {HTMLInputElement[]} */
-const inputs = Array.from(document.querySelectorAll("input.code-input-box"));
+/**
+ * @typedef {{
+ *   transferId: string, sessaoId: string, nome: string, tamanho: number, tipo: string,
+ *   enviados: number, estado: "enviando"|"recebendo"|"concluido"|"cancelado"|"erro",
+ *   cancelarPausa?: (() => void) | null,
+ *   cancelamentoEmitido?: boolean,
+ * }} EntradaTransfer
+ */
 
-/** @type {WebSocket | null} */
-let socket = null;
+/** @type {Map<string, RTCDataChannel>} */ const canais = new Map();
+/** @type {Map<string, EntradaTransfer>} */ const transferencias = new Map();
+/** @type {Map<string, File[]>} */ const filas = new Map();
+/** @type {Map<string, string>} */ const ativasEnvio = new Map();
+/** @type {Map<string, string>} */ const ativasRecebimento = new Map();
+/** @type {Map<string, { fila: Array<() => Promise<void>>, ocupado: boolean, cancelado: boolean }>} */ const controladoresFila = new Map();
 
-/** @type {string | null} */
-let meuCodigoServidor = null;
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-let souServidor = false;
-let abrirModalAoGerar = false;
-let aguardandoAprovacao = false;
+/**
+ * @param {string} sessaoId
+ * @param {string | undefined} transferId
+ */
+function limparSeProprio(sessaoId, transferId) {
+    // @ts-ignore
+    if (transferencias.has(transferId)) transferencias.delete(transferId);
+    if (ativasEnvio.get(sessaoId) === transferId) ativasEnvio.delete(sessaoId);
+}
 
-/** @type {string | null} */
-let sessaoAguardando = null;
+/**
+ * @param {{ transferId: any; sessaoId?: string; nome?: string; tamanho?: number; tipo?: string; enviados?: number; estado?: "enviando" | "recebendo" | "concluido" | "cancelado" | "erro"; cancelarPausa?: (() => void) | null | undefined; cancelamentoEmitido: any; }} entrada
+ * @param {string} sessaoId
+ */
+function emitirCancelamento(entrada, sessaoId) {
+    if (entrada.cancelamentoEmitido) return;
+    entrada.cancelamentoEmitido = true;
+    emitir("physicalcloud:transfer-cancelado", { transferId: entrada.transferId, sessaoId });
+}
 
-/** @type {Map<string, {papel: string, nome: string, permissao: string}>} */
-const sessoes = new Map();
+/**
+ * @param {BufferSource} buffer
+ */
+async function calcularSha256(buffer) {
+    const hash = await crypto.subtle.digest("SHA-256", buffer);
+    return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
 
-/** @type {ReturnType<typeof setInterval> | null} */
-let pingInterval = null;
-/** @type {ReturnType<typeof setTimeout> | null} */
-let timerReconexao = null;
-let tentativasReconexao = 0;
-let reconectando = false;
-
-
-// ─── Identificação do dispositivo ────────────────────────────────────────────
-
-/** @type {string | null} */
-let deviceIdMemoria = null;
-
-function gerarId() {
+function gerarTransferId() {
     if (crypto.randomUUID) return crypto.randomUUID();
-    const bytes = new Uint8Array(16);
-    crypto.getRandomValues(bytes);
-    return Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
+    const b = new Uint8Array(16);
+    crypto.getRandomValues(b);
+    return Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
 }
-
-function obterDeviceId() {
-    if (deviceIdMemoria) return deviceIdMemoria;
-
-    /** @type {string | null} */
-    let id = null;
-    try { id = localStorage.getItem("physicalCloudDeviceId"); } catch { /* navegação privada */ }
-
-    if (!id || !/^[A-Za-z0-9_-]{8,64}$/.test(id)) {
-        id = gerarId();
-        try { localStorage.setItem("physicalCloudDeviceId", id); } catch { /* sem armazenamento */ }
-    }
-    deviceIdMemoria = id;
-    return id;
-}
-
-function obterNomeDispositivo() {
-    const ua = navigator.userAgent;
-    if (/Android/i.test(ua)) return "Celular Android";
-    if (/iPhone|iPad/i.test(ua)) return "iPhone/iPad";
-    if (/Windows/i.test(ua)) return "PC Windows";
-    if (/Mac/i.test(ua)) return "Mac";
-    if (/Linux/i.test(ua)) return "PC Linux";
-    return "Dispositivo";
-}
-
-
-// ─── Envio e avisos na tela ──────────────────────────────────────────────────
 
 /**
- * @param {{ type: string; deviceId?: string; sessaoId?: any; aceitar?: any; permissao?: any; codigo?: string; nome?: string; }} obj
+ * @param {string} tipo
+ * @param {{ transferId?: any; sessaoId: any; motivo?: any; nome?: any; tamanho?: any; direcao?: string; enviados?: number; total?: any; timestamp?: number; }} detalhe
  */
-function enviar(obj) {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
-    socket.send(JSON.stringify(obj));
-    return true;
+function emitir(tipo, detalhe) {
+    window.dispatchEvent(new CustomEvent(tipo, { detail: detalhe }));
 }
 
-/** @type {HTMLElement | null} */
-let areaAvisos = null;
+// ─── Aguardar aceitação ─────────────────────────────────────────────────────
+
+/** @type {Map<string, { resolve: () => void, reject: (e: Error) => void }>} */
+const aguardandoAceitacaoMap = new Map();
 
 /**
- * @param {string | null} texto
+ * @param {string} transferId
+ * @param {RTCDataChannel} dc
  */
-function aviso(texto) {
-    if (!areaAvisos) {
-        areaAvisos = document.createElement("div");
-        Object.assign(areaAvisos.style, {
-            position: "fixed", left: "50%", bottom: "24px", transform: "translateX(-50%)",
-            display: "flex", flexDirection: "column", gap: "8px", zIndex: "10000",
-            maxWidth: "90vw", pointerEvents: "none",
-        });
-        document.body.appendChild(areaAvisos);
-    }
-    const el = document.createElement("div");
-    el.textContent = texto;
-    Object.assign(el.style, {
-        background: "#1b1b1b", color: "#fff", border: "1px solid #1f7a4d",
-        borderRadius: "10px", padding: "10px 16px", fontSize: "14px", textAlign: "center",
-    });
-    areaAvisos.appendChild(el);
-    setTimeout(() => el.remove(), 4500);
-}
+function aguardarAceitacao(transferId, dc) {
+    return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            aguardandoAceitacaoMap.delete(transferId);
+            reject(new Error("Tempo esgotado aguardando aceitação."));
+        }, TIMEOUT_ACEITE_MS);
 
-const MOTIVOS_ENCERRAMENTO = {
-    "recusado": "O dispositivo recusou a conexão.",
-    "pedido-expirou": "O pedido de conexão expirou sem resposta.",
-    "dispositivo-desconectou": "O outro dispositivo foi desconectado.",
-    "encerrado-pelo-dispositivo": "O outro dispositivo encerrou a conexão.",
-};
-
-const TEXTO_PERMISSAO = {
-    "leitura": "só leitura",
-    "leitura-escrita": "leitura e escrita",
-};
-
-
-// ─── Lista de dispositivos ────────────────────────────────────────────────────
-
-const listaDispositivos = document.getElementById("lista-dispositivos");
-const emptyDispositivos = document.getElementById("empty-dispositivos");
-const deviceActions     = document.getElementById("device-actions");
-
-function atualizarListaDispositivos() {
-    if (!listaDispositivos || !emptyDispositivos) return;
-
-    listaDispositivos.innerHTML = "";
-
-    if (sessoes.size === 0) {
-        emptyDispositivos.style.display = "";
-        listaDispositivos.style.display = "none";
-        if (deviceActions) deviceActions.style.display = "none";
-        return;
-    }
-
-    emptyDispositivos.style.display = "none";
-    listaDispositivos.style.display = "";
-    if (deviceActions) deviceActions.style.display = "";
-
-    for (const [sessaoId, s] of sessoes) {
-        const card = document.createElement("div");
-        card.className = "device-card";
-        card.dataset.sessaoId = sessaoId;
-
-        const icone = document.createElement("div");
-        icone.className = "device-icon";
-        icone.textContent = s.papel === "servidor" ? "💻" : "📱";
-
-        const info = document.createElement("div");
-        info.className = "device-info";
-
-        const nome = document.createElement("span");
-        nome.className = "device-name";
-        nome.textContent = s.nome;
-
-        const detalhes = document.createElement("span");
-        detalhes.className = "device-details";
-        // @ts-ignore
-        const permissaoTexto = TEXTO_PERMISSAO[s.permissao] || s.permissao;
-        detalhes.textContent = s.papel === "servidor"
-            ? `Conectado a você · ${permissaoTexto}`
-            : `Você conectado · ${permissaoTexto}`;
-
-        info.append(nome, detalhes);
-
-        const badge = document.createElement("span");
-        badge.className = "device-badge device-badge--online";
-        badge.textContent = "Online";
-
-        const btnEncerrar = document.createElement("button");
-        btnEncerrar.className = "device-btn-encerrar";
-        btnEncerrar.textContent = "Desconectar";
-        btnEncerrar.addEventListener("click", () => {
-            encerrarSessao(sessaoId);
+        aguardandoAceitacaoMap.set(transferId, {
+            // @ts-ignore
+            resolve: () => { clearTimeout(timeout); resolve(); },
+            reject: (e) => { clearTimeout(timeout); reject(e); },
         });
 
-        card.append(icone, info, badge, btnEncerrar);
-        listaDispositivos.appendChild(card);
-    }
-}
-
-
-// ─── Abrir modal de conectar ──────────────────────────────────────────────────
-
-function abrirModalConectar() {
-    limparInputs();
-    telaDeConectar?.classList.add("active");
-    inputs[0]?.focus();
-}
-
-
-// ─── Tabs ─────────────────────────────────────────────────────────────────────
-
-document.querySelectorAll(".nav-item[data-tab]").forEach(btn => {
-    btn.addEventListener("click", () => {
-        const alvo = /** @type {HTMLElement} */ (btn).dataset.tab;
-        if (!alvo) return;
-
-        document.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
-        document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
-
-        btn.classList.add("active");
-        document.getElementById(alvo)?.classList.add("active");
+        const onclose = () => {
+            aguardandoAceitacaoMap.get(transferId)?.reject(new Error("Canal fechado."));
+            aguardandoAceitacaoMap.delete(transferId);
+            dc.removeEventListener("close", onclose);
+        };
+        dc.addEventListener("close", onclose);
     });
-});
-
-
-// ─── Contagem regressiva do código ───────────────────────────────────────────
-
-/** @type {HTMLElement | null} */
-let elContagem = null;
-/** @type {HTMLButtonElement | null} */
-let btnNovoCodigo = null;
-/** @type {HTMLButtonElement | null} */
-let btnPararServidor = null;
-let fimCodigo = 0;
-/** @type {ReturnType<typeof setInterval> | null} */
-let timerCodigo = null;
-
-function prepararExtrasDoModalCodigo() {
-    if (!codigoTexto || elContagem) return;
-
-    elContagem = document.createElement("p");
-    elContagem.id = "codigo-contagem";
-    Object.assign(elContagem.style, { opacity: "0.8", fontSize: "14px", margin: "18px 0 8px" });
-
-    btnNovoCodigo = document.createElement("button");
-    btnNovoCodigo.type = "button";
-    btnNovoCodigo.id = "btn-novo-codigo";
-    btnNovoCodigo.textContent = "Gerar novo código";
-    Object.assign(btnNovoCodigo.style, {
-        background: "transparent", color: "inherit", border: "1px solid #1f7a4d",
-        borderRadius: "8px", padding: "6px 14px", cursor: "pointer", display: "block", margin: "8px auto 0",
-    });
-    btnNovoCodigo.addEventListener("click", () => {
-        abrirModalAoGerar = true;
-        if (!enviar({ type: "tornar-servidor", deviceId: obterDeviceId() })) {
-            abrirModalAoGerar = false;
-            aviso("Servidor desconectado. Aguarde a reconexão.");
-        }
-    });
-
-    btnPararServidor = document.createElement("button");
-    btnPararServidor.type = "button";
-    btnPararServidor.id = "btn-parar-servidor";
-    btnPararServidor.textContent = "Parar de ser servidor";
-    Object.assign(btnPararServidor.style, {
-        background: "transparent", color: "#ff6b6b", border: "1px solid #ff6b6b",
-        borderRadius: "8px", padding: "6px 14px", cursor: "pointer",
-        display: "block", margin: "8px auto 0", fontSize: "13px",
-    });
-    btnPararServidor.addEventListener("click", () => {
-        pararServidor();
-        aviso("Este dispositivo não é mais servidor. Recarregue para conectar como cliente.");
-    });
-
-    codigoTexto.parentElement?.append(elContagem, btnNovoCodigo, btnPararServidor);
-}
-
-function mostrarDigitos(codigo = "") {
-    const caixas = document.querySelectorAll("#modal-codigo .code-digit");
-    caixas.forEach((caixa, i) => { caixa.textContent = codigo[i] || ""; });
-}
-
-function pararContagem() {
-    if (timerCodigo) clearInterval(timerCodigo);
-    timerCodigo = null;
-}
-
-function atualizarContagem() {
-    const restante = Math.max(0, Math.ceil((fimCodigo - Date.now()) / 1000));
-    if (elContagem) {
-        if (restante > 0) {
-            const m = Math.floor(restante / 60);
-            const s = String(restante % 60).padStart(2, "0");
-            elContagem.textContent = `Expira em ${m}:${s}`;
-        } else {
-            elContagem.textContent = "Código expirado. Gere um novo.";
-        }
-    }
-    if (restante === 0) pararContagem();
 }
 
 /**
- * @param {number} segundos
+ * [Fix.10] Rejeita aguardarAceitacao pendente — chamado por file-cancel, file-error
+ * e cleanup de file-ok. Sem isso, enviarArquivo ficava pendurado 30 s após o peer
+ * cancelar (file-cancel) ou enviar erro durante a janela de aceitação.
+ * @param {string} transferId
+ * @param {string} motivo
  */
-function iniciarContagem(segundos) {
-    pararContagem();
-    fimCodigo = Date.now() + segundos * 1000;
-    atualizarContagem();
-    timerCodigo = setInterval(atualizarContagem, 1000);
+function rejeitarAceitacaoPendente(transferId, motivo) {
+    const prom = aguardandoAceitacaoMap.get(transferId);
+    if (prom) {
+        aguardandoAceitacaoMap.delete(transferId);
+        prom.reject(new Error(motivo));
+    }
 }
 
+// ─── Timeout de file-ok/file-error ──────────────────────────────────────────
 
-// ─── Pedidos de conexão ───────────────────────────────────────────────────────
+/** @type {Map<string, ReturnType<typeof setTimeout>>} */
+const timeoutsOk = new Map();
 
-/** @type {{sessaoId: string, nome: string, chegouEm: number}[]} */
-const filaPedidos = [];
-/** @type {HTMLElement | null} */
-let dialogoPedido = null;
-/** @type {ReturnType<typeof setInterval> | null} */
-let timerPedido = null;
-
-function fecharDialogoPedido() {
-    if (timerPedido) clearInterval(timerPedido);
-    timerPedido = null;
-    if (dialogoPedido) dialogoPedido.remove();
-    dialogoPedido = null;
+/**
+ * [Fix.12] Arma timeout para file-ok/file-error. Se o peer não responder em
+ * 60 s, força erro para não deixar entrada travada em transferencias.
+ * @param {string} transferId
+ * @param {string} sessaoId
+ */
+function armarTimeoutOk(transferId, sessaoId) {
+    const t = setTimeout(() => {
+        timeoutsOk.delete(transferId);
+        const entrada = transferencias.get(transferId);
+        if (!entrada) return;
+        entrada.estado = "erro";
+        limparSeProprio(sessaoId, transferId);
+        emitir("physicalcloud:transfer-erro", {
+            transferId, sessaoId, motivo: "Tempo esgotado aguardando confirmação do peer.",
+        });
+        processarFila(sessaoId);
+    }, TIMEOUT_OK_MS);
+    timeoutsOk.set(transferId, t);
 }
 
 /**
- * @param {boolean} aceitar
- * @param {string} permissao
+ * @param {string} transferId
  */
-function responderPedido(aceitar, permissao) {
-    const pedido = filaPedidos.shift();
-    if (!pedido) return;
-    enviar({ type: "responder-pedido", sessaoId: pedido.sessaoId, aceitar, permissao });
-    fecharDialogoPedido();
-    mostrarProximoPedido();
+function cancelarTimeoutOk(transferId) {
+    const t = timeoutsOk.get(transferId);
+    if (t) { clearTimeout(t); timeoutsOk.delete(transferId); }
 }
 
-function mostrarProximoPedido() {
-    if (dialogoPedido) return;
-    const pedido = filaPedidos[0];
-    if (!pedido) return;
-
-    const fundo = document.createElement("div");
-    Object.assign(fundo.style, {
-        position: "fixed", inset: "0", background: "rgba(0,0,0,0.65)", display: "flex",
-        alignItems: "center", justifyContent: "center", zIndex: "9999",
-    });
-
-    const caixa = document.createElement("div");
-    Object.assign(caixa.style, {
-        background: "#111", color: "#fff", border: "1px solid #2a2a2a", borderRadius: "16px",
-        padding: "24px", width: "min(380px, 90vw)", textAlign: "center",
-    });
-
-    const titulo = document.createElement("h3");
-    titulo.textContent = "Permitir conexão?";
-    titulo.style.margin = "0 0 12px";
-
-    const texto = document.createElement("p");
-    texto.textContent = `"${pedido.nome}" quer acessar a pasta deste dispositivo.`;
-
-    const contagem = document.createElement("p");
-    Object.assign(contagem.style, { opacity: "0.7", fontSize: "13px" });
-
-    const rotulo = document.createElement("label");
-    rotulo.textContent = "Permissão: ";
-    const escolha = document.createElement("select");
-    for (const [valor, nome] of Object.entries(TEXTO_PERMISSAO)) {
-        const opcao = document.createElement("option");
-        opcao.value = valor;
-        opcao.textContent = nome;
-        escolha.appendChild(opcao);
-    }
-    rotulo.appendChild(escolha);
-
-    const botoes = document.createElement("div");
-    Object.assign(botoes.style, { display: "flex", gap: "12px", justifyContent: "center", marginTop: "16px" });
-
-    const btnPermitir = document.createElement("button");
-    btnPermitir.type = "button";
-    btnPermitir.textContent = "Permitir";
-    Object.assign(btnPermitir.style, {
-        background: "#1f7a4d", color: "#fff", border: "none", borderRadius: "10px",
-        padding: "10px 20px", cursor: "pointer",
-    });
-    btnPermitir.addEventListener("click", () => responderPedido(true, escolha.value));
-
-    const btnRecusar = document.createElement("button");
-    btnRecusar.type = "button";
-    btnRecusar.textContent = "Recusar";
-    Object.assign(btnRecusar.style, {
-        background: "#2a2a2a", color: "#fff", border: "none", borderRadius: "10px",
-        padding: "10px 20px", cursor: "pointer",
-    });
-    btnRecusar.addEventListener("click", () => responderPedido(false, "leitura"));
-
-    botoes.append(btnPermitir, btnRecusar);
-    caixa.append(titulo, texto, rotulo, contagem, botoes);
-    fundo.appendChild(caixa);
-    document.body.appendChild(fundo);
-    dialogoPedido = fundo;
-
-    const atualizar = () => {
-        const restante = Math.max(0, TEMPO_PEDIDO_S - Math.floor((Date.now() - pedido.chegouEm) / 1000));
-        contagem.textContent = `Expira em ${restante}s`;
-    };
-    atualizar();
-    timerPedido = setInterval(atualizar, 1000);
-}
+// ─── Envio ──────────────────────────────────────────────────────────────────
 
 /**
  * @param {string} sessaoId
+ * @param {File} arquivo
  */
-function removerPedido(sessaoId) {
-    const posicao = filaPedidos.findIndex(p => p.sessaoId === sessaoId);
-    if (posicao === -1) return;
-    const eraOAberto = posicao === 0 && dialogoPedido !== null;
-    filaPedidos.splice(posicao, 1);
-    if (eraOAberto) {
-        fecharDialogoPedido();
-        mostrarProximoPedido();
-    }
-}
-
-
-// ─── Inputs do código ─────────────────────────────────────────────────────────
-
-function limparInputs() {
-    inputs.forEach(input => { input.value = ""; });
-}
-
-function enviarCodigoSeCompleto() {
-    if (!inputs.every(input => input.value !== "")) return;
-    if (aguardandoAprovacao) return;
-
-    const codigo = inputs.map(input => input.value).join("");
-
-    if (meuCodigoServidor !== null && codigo === meuCodigoServidor) {
-        aviso("Você não pode conectar ao próprio dispositivo servidor.");
-        limparInputs();
-        inputs[0].focus();
+async function enviarArquivo(sessaoId, arquivo) {
+    const dc = canais.get(sessaoId);
+    if (!dc || dc.readyState !== "open") {
+        emitir("physicalcloud:transfer-erro", { sessaoId, motivo: "Canal não está aberto." });
+        processarFila(sessaoId);
         return;
     }
 
-    const enviado = enviar({
-        type: "conectar",
-        codigo: codigo,
-        deviceId: obterDeviceId(),
-        nome: obterNomeDispositivo(),
-    });
-    if (!enviado) {
-        aviso("O servidor está desconectado. Aguarde a reconexão e tente de novo.");
-    }
-}
-
-inputs.forEach((input, index) => {
-    input.addEventListener("input", () => {
-        input.value = input.value.replace(/\D/g, "").slice(0, 1);
-        if (input.value && index < inputs.length - 1) inputs[index + 1].focus();
-        enviarCodigoSeCompleto();
-    });
-
-    input.addEventListener("keydown", event => {
-        if (event.key === "Backspace" && input.value === "" && index > 0) {
-            inputs[index - 1].focus();
-        }
-    });
-
-    input.addEventListener("paste", event => {
-        const clipboardData = event.clipboardData;
-        if (!clipboardData) return;
-        const colado = clipboardData.getData("text").replace(/\D/g, "").slice(0, 6);
-        if (!colado) return;
-        event.preventDefault();
-        limparInputs();
-        colado.split("").forEach((digito, i) => { if (inputs[i]) inputs[i].value = digito; });
-        const proximoFoco = Math.min(colado.length, inputs.length - 1);
-        inputs[proximoFoco].focus();
-        enviarCodigoSeCompleto();
-    });
-});
-
-
-// ─── Botões principais ────────────────────────────────────────────────────────
-
-document.getElementById("btn-tornar-servidor")?.addEventListener("click", () => {
-    abrirModalAoGerar = true;
-    if (!enviar({ type: "tornar-servidor", deviceId: obterDeviceId() })) {
-        abrirModalAoGerar = false;
-        aviso("Servidor desconectado. Aguarde a reconexão.");
-        return;
-    }
-    souServidor = true;
-    telaDeCodigo?.classList.remove("active");
-});
-
-// [Fix.1] Agora invalida o código no servidor via "parar-servidor".
-// Sem isso, o código continuava válido por até 5 min após o usuário "parar de ser servidor".
-function pararServidor() {
-    souServidor = false;
-    meuCodigoServidor = null;
-    pararContagem();
-    mostrarDigitos("");
-    telaDeCodigo?.classList.remove("active");
-
-    // Invalida o código no servidor (mensagem nova do Fix.1)
-    enviar({ type: "parar-servidor" });
-
-    // Encerra sessões ativas em que este dispositivo é servidor.
-    const idsServidor = [...sessoes.entries()]
-        .filter(([, s]) => s.papel === "servidor")
-        .map(([id]) => id);
-    for (const id of idsServidor) encerrarSessao(id);
-}
-// [Fix.6] Removido window.__pararServidor — alias não era usado por ninguém.
-
-document.getElementById("btn-conectar")?.addEventListener("click", abrirModalConectar);
-document.getElementById("btn-conectar-extra")?.addEventListener("click", abrirModalConectar);
-
-fecharModalConectar?.addEventListener("click", () => {
-    telaDeConectar?.classList.remove("active");
-    limparInputs();
-});
-
-fecharModal?.addEventListener("click", () => {
-    telaDeCodigo?.classList.remove("active");
-});
-
-
-// ─── Mensagens recebidas do servidor WebSocket ────────────────────────────────
-
-/**
- * @param {{ data: string; }} event
- */
-function tratarMensagem(event) {
-    let dados;
+    // [Fix.11] Cria reader ANTES de tocar em Maps/UI. Se stream() lançar
+    // (arquivo removido do disco, permissão revogada), não deixa estado órfão.
+    /** @type {ReadableStreamDefaultReader<Uint8Array> | null} */
+    let reader = null;
     try {
-        dados = JSON.parse(event.data);
-    } catch {
-        console.error("Mensagem inválida do servidor:", event.data);
+        reader = arquivo.stream().getReader();
+    } catch (e) {
+        console.error("Falha ao abrir stream do arquivo:", e);
+        emitir("physicalcloud:transfer-erro", {
+            sessaoId, motivo: "Não foi possível ler o arquivo selecionado.",
+        });
+        processarFila(sessaoId);
         return;
     }
-    if (!dados || typeof dados !== "object") return;
 
-    switch (dados.type) {
+    const transferId = gerarTransferId();
+    /** @type {EntradaTransfer} */
+    const entrada = {
+        transferId, sessaoId,
+        nome: arquivo.name,
+        tamanho: arquivo.size,
+        tipo: arquivo.type || "application/octet-stream",
+        enviados: 0,
+        estado: "enviando",
+        cancelarPausa: null,
+        cancelamentoEmitido: false,
+    };
+    transferencias.set(transferId, entrada);
+    ativasEnvio.set(sessaoId, transferId);
 
-        // [Fix.1b] Guard: só processa codigo-gerado se realmente somos servidor.
-        // Defesa em profundidade contra race com parar-servidor.
-        case "codigo-gerado":
-            if (!souServidor) return;
-            meuCodigoServidor = String(dados.codigo);
-            if (codigoTexto) codigoTexto.textContent = meuCodigoServidor;
-            mostrarDigitos(meuCodigoServidor);
-            prepararExtrasDoModalCodigo();
-            iniciarContagem(Number(dados.validadeSegundos) || 300);
-            if (abrirModalAoGerar) telaDeCodigo?.classList.add("active");
-            abrirModalAoGerar = false;
-            break;
+    try {
+        dc.send(JSON.stringify({
+            type: "file-offer", transferId,
+            nome: arquivo.name, tamanho: arquivo.size,
+            tipo: arquivo.type || "application/octet-stream",
+        }));
+    } catch (e) {
+        console.error("Falha ao enviar file-offer:", e);
+        reader.releaseLock();
+        limparSeProprio(sessaoId, transferId);
+        processarFila(sessaoId);
+        return;
+    }
 
-        case "codigo-expirado":
-            meuCodigoServidor = null;
-            pararContagem();
-            mostrarDigitos("");
-            if (elContagem) elContagem.textContent = "Código expirado. Gere um novo.";
-            aviso("Seu código expirou. Gere um novo para aceitar outros dispositivos.");
-            break;
+    emitir("physicalcloud:transfer-inicio", {
+        transferId, sessaoId, nome: arquivo.name, tamanho: arquivo.size, direcao: "envio",
+    });
 
-        // [Fix.1] Confirmação do servidor de que o código foi removido.
-        case "servidor-parado":
-            // Nada a fazer — estado local já foi resetado em pararServidor().
-            break;
+    try {
+        await aguardarAceitacao(transferId, dc);
+    } catch {
+        // [Fix.10] rejeitarAceitacaoPendente já foi chamado por quem cancelou
+        // (file-cancel, file-error, sessao-encerrada) OU foi timeout. Catch só
+        // normaliza entrada e limpa.
+        entrada.estado = "cancelado";
+        reader.releaseLock();
+        limparSeProprio(sessaoId, transferId);
+        // @ts-ignore
+        emitirCancelamento(entrada, sessaoId);
+        processarFila(sessaoId);
+        return;
+    }
 
-        case "aguardando-aprovacao":
-            aguardandoAprovacao = true;
-            sessaoAguardando = String(dados.sessaoId);
-            aviso("Pedido enviado. Aguarde o outro dispositivo aprovar…");
-            break;
+    // ── Streaming com backpressure ──────────────────────────────────────────
+    dc.bufferedAmountLowThreshold = BUFFER_BAIXO;
+    let pausado = false;
+    /** @type {((value?: any) => void) | null} */
+    let resolverPausa = null;
 
-        // [Fix.1b] Guard: se souServidor virou false (usuário clicou parar),
-        // um pedido-conexao em trânsito ainda pode chegar. Ignora.
-        case "pedido-conexao":
-            if (!souServidor) return;
-            filaPedidos.push({
-                sessaoId: String(dados.sessaoId),
-                nome: String(dados.nome || "Dispositivo"),
-                chegouEm: Date.now(),
-            });
-            mostrarProximoPedido();
-            break;
-
-        case "conectado": {
-            aguardandoAprovacao = false;
-            sessaoAguardando = null;
-            const permissao = String(dados.permissao || "leitura");
-            const sessaoId = String(dados.sessaoId);
-            sessoes.set(sessaoId, { papel: "cliente", nome: "Dispositivo servidor", permissao });
-            telaDeConectar?.classList.remove("active");
-            limparInputs();
-            // @ts-ignore
-            aviso(`${dados.mensagem || "Conexão estabelecida com sucesso!"} (${TEXTO_PERMISSAO[permissao] || permissao})`);
-            atualizarListaDispositivos();
-            window.dispatchEvent(new CustomEvent("physicalcloud:sessao-ativa", { detail: { sessaoId, papel: "cliente" } }));
-            break;
+    const liberarPausa = () => {
+        if (pausado && resolverPausa) {
+            const r = resolverPausa;
+            pausado = false;
+            resolverPausa = null;
+            r();
         }
+    };
+    const onBufferLow = () => liberarPausa();
+    const onClose = () => liberarPausa();
 
-        case "dispositivo-conectou": {
-            const permissao = String(dados.permissao || "leitura");
-            const nome = String(dados.nome || "Dispositivo");
-            const sessaoId = String(dados.sessaoId);
-            sessoes.set(sessaoId, { papel: "servidor", nome, permissao });
-            // @ts-ignore
-            aviso(`${nome} conectou ao seu dispositivo (${TEXTO_PERMISSAO[permissao] || permissao}).`);
-            atualizarListaDispositivos();
-            window.dispatchEvent(new CustomEvent("physicalcloud:sessao-ativa", { detail: { sessaoId, papel: "servidor" } }));
-            break;
-        }
+    dc.addEventListener("bufferedamountlow", onBufferLow);
+    dc.addEventListener("close", onClose);
+    entrada.cancelarPausa = liberarPausa;
 
-        case "sessao-encerrada": {
-            const id = String(dados.sessaoId);
-            removerPedido(id);
-            const existia = sessoes.delete(id);
-            const eraMeuPedido = id === sessaoAguardando;
-            if (eraMeuPedido) {
-                aguardandoAprovacao = false;
-                sessaoAguardando = null;
-                limparInputs();
-                inputs[0]?.focus();
-            }
-            if (existia || eraMeuPedido) {
+    try {
+        while (true) {
+            if (/** @type {string} */ (entrada.estado) === "cancelado") break;
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (!value) continue;
+
+            let offset = 0;
+            while (offset < value.byteLength) {
+                if (/** @type {string} */ (entrada.estado) === "cancelado") break;
+                if (dc.readyState !== "open") { entrada.estado = "cancelado"; break; }
+
+                const fim = Math.min(offset + TAMANHO_CHUNK, value.byteLength);
+                const fatia = value.buffer.slice(value.byteOffset + offset, value.byteOffset + fim);
+
                 // @ts-ignore
-                aviso(MOTIVOS_ENCERRAMENTO[dados.motivo] || "A conexão foi encerrada.");
+                try { dc.send(fatia); }
+                catch { entrada.estado = "cancelado"; break; }
+
+                entrada.enviados += fatia.byteLength;
+                emitir("physicalcloud:transfer-progresso", {
+                    transferId, sessaoId, enviados: entrada.enviados, total: arquivo.size,
+                    timestamp: Date.now(),
+                });
+
+                if (dc.bufferedAmount > BUFFER_ALTO) {
+                    pausado = true;
+                    await new Promise((res) => { resolverPausa = res; });
+                }
+                offset = fim;
             }
-            atualizarListaDispositivos();
-            if (existia) {
-                window.dispatchEvent(new CustomEvent("physicalcloud:sessao-encerrada", { detail: { sessaoId: id } }));
-            }
-            break;
         }
+    } finally {
+        try { reader.releaseLock(); } catch { /* noop */ }
+        dc.removeEventListener("bufferedamountlow", onBufferLow);
+        dc.removeEventListener("close", onClose);
+        entrada.cancelarPausa = null;
+    }
 
-        case "sinal":
-            window.dispatchEvent(new CustomEvent("physicalcloud:sinal", { detail: dados }));
-            break;
+    if (/** @type {string} */ (entrada.estado) === "cancelado") {
+        limparSeProprio(sessaoId, transferId);
+        // @ts-ignore
+        emitirCancelamento(entrada, sessaoId);
+        processarFila(sessaoId);
+        return;
+    }
 
-        case "erro":
-            aguardandoAprovacao = false;
-            sessaoAguardando = null;
-            aviso(dados.mensagem || "Não foi possível conectar.");
-            limparInputs();
-            inputs[0]?.focus();
-            break;
+    let sha256;
+    try {
+        sha256 = await calcularSha256(await arquivo.arrayBuffer());
+    } catch (e) {
+        console.error("Falha ao calcular SHA-256:", e);
+        entrada.estado = "cancelado";
+        try { if (dc.readyState === "open") dc.send(JSON.stringify({ type: "file-cancel", transferId })); } catch { /* noop */ }
+        limparSeProprio(sessaoId, transferId);
+        // @ts-ignore
+        emitirCancelamento(entrada, sessaoId);
+        processarFila(sessaoId);
+        return;
+    }
 
-        default:
-            console.log("Mensagem não tratada:", dados);
+    if (/** @type {string} */ (entrada.estado) === "cancelado") {
+        limparSeProprio(sessaoId, transferId);
+        // @ts-ignore
+        emitirCancelamento(entrada, sessaoId);
+        processarFila(sessaoId);
+        return;
+    }
+
+    try {
+        dc.send(JSON.stringify({ type: "file-done", transferId, sha256 }));
+        // [Fix.12] arma timeout esperando file-ok / file-error
+        armarTimeoutOk(transferId, sessaoId);
+    } catch (e) {
+        console.error("Falha ao enviar file-done:", e);
+        limparSeProprio(sessaoId, transferId);
+        // @ts-ignore
+        emitirCancelamento(entrada, sessaoId);
+        processarFila(sessaoId);
     }
 }
 
-
-// ─── Conexão WebSocket (com reconexão automática) ─────────────────────────────
-
-function conectarSocket() {
-    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
-    if (timerReconexao) clearTimeout(timerReconexao);
-    timerReconexao = null;
-
-    const ws = new WebSocket(URL_SERVIDOR);
-    socket = ws;
-
-    ws.addEventListener("open", () => {
-        tentativasReconexao = 0;
-
-        pingInterval = setInterval(() => {
-            if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
-        }, 240000);
-
-        if (reconectando) {
-            reconectando = false;
-            aviso("Reconectado ao servidor.");
-        }
-
-        if (souServidor) {
-            abrirModalAoGerar = true;
-            enviar({ type: "tornar-servidor", deviceId: obterDeviceId() });
-        }
-    });
-
-    ws.addEventListener("message", tratarMensagem);
-
-    ws.addEventListener("error", () => {
-        console.error("Erro no WebSocket.");
-    });
-
-    ws.addEventListener("close", event => {
-        if (socket !== ws) return;
-
-        if (pingInterval) clearInterval(pingInterval);
-        pingInterval = null;
-
-        meuCodigoServidor = null;
-        pararContagem();
-        mostrarDigitos("");
-        telaDeCodigo?.classList.remove("active");
-
-        for (const [sessaoId] of sessoes) {
-            window.dispatchEvent(new CustomEvent("physicalcloud:sessao-encerrada", { detail: { sessaoId } }));
-        }
-        sessoes.clear();
-        atualizarListaDispositivos();
-
-        filaPedidos.length = 0;
-        fecharDialogoPedido();
-        aguardandoAprovacao = false;
-        sessaoAguardando = null;
-
-        const recusado = event.code === 1008;
-        const espera = recusado ? 30000 : Math.min(1000 * 2 ** tentativasReconexao, 15000);
-        if (tentativasReconexao === 0 || recusado) {
-            aviso(recusado
-                ? `O servidor recusou a conexão${event.reason ? ": " + event.reason : ""}.`
-                : "Conexão perdida. Tentando reconectar…");
-        }
-        tentativasReconexao++;
-        reconectando = true;
-        timerReconexao = setTimeout(conectarSocket, espera);
-    });
-}
-
-document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState !== "visible") return;
-    if (socket && socket.readyState !== WebSocket.CLOSED) return;
-    if (timerReconexao) clearTimeout(timerReconexao);
-    tentativasReconexao = 0;
-    conectarSocket();
-});
-
-
-// ─── API para módulos externos (WebRTC, Transfer) ─────────────────────────────
+// ─── Fila de envio ─────────────────────────────────────────────────────────
 
 /**
  * @param {string} sessaoId
  */
-function encerrarSessao(sessaoId) {
-    enviar({ type: "encerrar", sessaoId });
-    sessoes.delete(sessaoId);
-    atualizarListaDispositivos();
+function processarFila(sessaoId) {
+    if (ativasEnvio.has(sessaoId)) return;
+    const fila = filas.get(sessaoId);
+    if (!fila || fila.length === 0) return;
+    const proximo = fila.shift();
+    if (proximo) {
+        enviarArquivo(sessaoId, proximo).catch((e) => {
+            console.error("Erro em enviarArquivo:", e);
+        });
+    }
 }
 
-// ─── Listener: aviso local quando peer WebRTC falha neste dispositivo ────────
-//
-// [Fix.4/C4] Distingue três motivos:
-//   - "conexao-perdida": estava conectado e caiu (mensagem atual)
-//   - "conexao-nao-estabelecida": ICE falhou antes de conectar (NAT/firewall)
-//   - "relay-detectado": getStats() detectou candidateType "relay"
-window.addEventListener("physicalcloud:aviso-local", (event) => {
-    const { sessaoId, motivo } = /** @type {CustomEvent} */ (event).detail;
-    const s = sessaoId ? sessoes.get(String(sessaoId)) : undefined;
-    const nome = s?.nome || "Dispositivo";
+/**
+ * @param {string} sessaoId
+ * @param {File[]} arquivos
+ */
+function enfileirarArquivos(sessaoId, arquivos) {
+    if (!filas.has(sessaoId)) filas.set(sessaoId, []);
+    // @ts-ignore
+    filas.get(sessaoId).push(...arquivos);
+    processarFila(sessaoId);
+}
 
-    if (motivo === "conexao-perdida") {
-        aviso(`A conexão com ${nome} foi perdida.`);
-    } else if (motivo === "conexao-nao-estabelecida") {
-        aviso(`Não foi possível conectar diretamente com ${nome}. Verifique firewalls ou tente outra rede.`);
-    } else if (motivo === "relay-detectado") {
-        aviso(`Conexão com ${nome} está sendo retransmitida. Pode ser mais lenta que o normal.`);
+// ─── Recebimento ────────────────────────────────────────────────────────────
+
+/**
+ * @type {Map<string, {
+ *   transferId: string, nome: string, tamanho: number, tipo: string,
+ *   chunks: BlobPart[], recebidos: number,
+ *   writerHandle: FileSystemWritableFileStream | null,
+ *   fileHandle: FileSystemFileHandle | null,
+ * }>}
+ */
+const recebimentos = new Map();
+
+/**
+ * @param {string} sessaoId
+ * @param {{ transferId: any; nome: any; tamanho: any; tipo: any; }} msg
+ * @param {RTCDataChannel} dc
+ * @param {{ (fn: () => Promise<void>): void; (arg0: () => Promise<void>): void; }} enfileirar
+ */
+async function tratarFileOffer(sessaoId, msg, dc, enfileirar) {
+    const { transferId, nome, tamanho, tipo } = msg;
+
+    if (
+        typeof transferId !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(transferId)
+    ) return;
+    if (typeof nome !== "string" || nome.length === 0 || nome.length > 255) return;
+    if (typeof tamanho !== "number" || !Number.isFinite(tamanho) || tamanho < 0) return;
+
+    // [Fix.13] Se já existe entry para esta sessão, aborta writer antigo.
+    // Antes, um segundo file-offer (peer bug ou malicioso) orfanava o
+    // FileSystemWritableFileStream anterior, mantendo handle aberto até GC.
+    const anterior = recebimentos.get(sessaoId);
+    if (anterior) {
+        if (anterior.writerHandle) anterior.writerHandle.abort().catch(() => {});
+        // Rejeita qualquer aceitação pendente do anterior (defensivo)
+        rejeitarAceitacaoPendente(anterior.transferId, "Substituído por novo file-offer.");
+        recebimentos.delete(sessaoId);
+        ativasRecebimento.delete(sessaoId);
+        emitir("physicalcloud:transfer-cancelado", {
+            transferId: anterior.transferId, sessaoId,
+        });
+    }
+
+    const tipoSeguro = (typeof tipo === "string" && /^[\w.+-]+\/[\w.+-]+$/.test(tipo))
+        ? tipo
+        : "application/octet-stream";
+
+    recebimentos.set(sessaoId, {
+        transferId, nome, tamanho, tipo: tipoSeguro,
+        chunks: [], recebidos: 0,
+        writerHandle: null, fileHandle: null,
+    });
+    ativasRecebimento.set(sessaoId, transferId);
+
+    dc.send(JSON.stringify({ type: "file-accept", transferId }));
+
+    emitir("physicalcloud:transfer-inicio", {
+        transferId, sessaoId, nome, tamanho, direcao: "recebimento",
+    });
+
+    const temFSAPI = "showSaveFilePicker" in window;
+    if (temFSAPI) {
+        // @ts-ignore
+        window.showSaveFilePicker({
+            suggestedName: nome,
+            types: [{ description: "Arquivo", accept: { [tipoSeguro]: [] } }],
+        })
+            .then(/** @param {FileSystemFileHandle} fh */ (fh) => {
+                enfileirar(async () => {
+                    const wh = await fh.createWritable();
+                    const rec = recebimentos.get(sessaoId);
+                    if (!rec || rec.transferId !== transferId) {
+                        await wh.abort().catch(() => {});
+                        return;
+                    }
+                    for (const chunk of rec.chunks) await wh.write(chunk);
+                    rec.chunks = [];
+                    rec.writerHandle = wh;
+                    rec.fileHandle = fh;
+                });
+            })
+            .catch(() => { /* usuário cancelou */ });
+    }
+}
+
+/**
+ * @param {string} sessaoId
+ * @param {{ type: any; transferId: string; sha256: any; motivo: string; }} msg
+ * @param {{ send: (arg0: string) => void; }} dc
+ * @param {{ (fn: any): void; (fn: () => Promise<void>): void; }} enfileirar
+ */
+async function tratarMensagemJson(sessaoId, msg, dc, enfileirar) {
+    if (!msg || typeof msg.type !== "string") return;
+
+    switch (msg.type) {
+        case "file-offer":
+            // @ts-ignore
+            await tratarFileOffer(sessaoId, msg, dc, enfileirar);
+            break;
+
+        case "file-accept": {
+            const prom = aguardandoAceitacaoMap.get(msg.transferId);
+            if (prom) {
+                aguardandoAceitacaoMap.delete(msg.transferId);
+                prom.resolve();
+            }
+            break;
+        }
+
+        case "file-done": {
+            const rec = recebimentos.get(sessaoId);
+            if (!rec || rec.transferId !== msg.transferId) return;
+
+            const sha256Remoto = msg.sha256;
+
+            if (rec.writerHandle) {
+                try {
+                    await rec.writerHandle.close();
+                } catch (e) {
+                    console.error("Erro ao fechar writer:", e);
+                    try { dc.send(JSON.stringify({ type: "file-error", transferId: rec.transferId, motivo: "Falha ao salvar arquivo." })); } catch { /* noop */ }
+                    recebimentos.delete(sessaoId);
+                    ativasRecebimento.delete(sessaoId);
+                    return;
+                }
+
+                try {
+                    if (rec.fileHandle) {
+                        const f = await rec.fileHandle.getFile();
+                        const buf = await f.arrayBuffer();
+                        const sha256Local = await calcularSha256(buf);
+                        if (sha256Local !== sha256Remoto) {
+                            try { dc.send(JSON.stringify({ type: "file-error", transferId: rec.transferId, motivo: "Falha de integridade SHA-256." })); } catch { /* noop */ }
+                            emitir("physicalcloud:transfer-erro", { sessaoId, transferId: rec.transferId, motivo: "Arquivo corrompido (SHA-256 não confere)." });
+                            recebimentos.delete(sessaoId);
+                            ativasRecebimento.delete(sessaoId);
+                            return;
+                        }
+                    }
+                } catch { /* ignora */ }
+
+                // [Fix.14] Verifica se a sessão ainda está viva APÓS os awaits.
+                // Se sessao-encerrada rodou durante o SHA, recebimentos já foi
+                // deletado — não emite "concluído" em cima de "cancelado".
+                if (!recebimentos.has(sessaoId)) return;
+
+                try { dc.send(JSON.stringify({ type: "file-ok", transferId: rec.transferId })); } catch { /* noop */ }
+                // Deletar ANTES de emitir, para que qualquer sessao-encerrada
+                // disparada durante emitir(transfer-concluido) não ache rec.
+                recebimentos.delete(sessaoId);
+                ativasRecebimento.delete(sessaoId);
+                emitir("physicalcloud:transfer-concluido", {
+                    transferId: rec.transferId, sessaoId, nome: rec.nome, tamanho: rec.tamanho, direcao: "recebimento",
+                });
+            } else {
+                const blob = new Blob(rec.chunks, { type: rec.tipo || "application/octet-stream" });
+                const buf = await blob.arrayBuffer();
+                const sha256Local = await calcularSha256(buf);
+
+                // [Fix.14] idem — checa que recebimentos ainda existe após awaits
+                if (!recebimentos.has(sessaoId)) return;
+
+                if (sha256Local !== sha256Remoto) {
+                    try { dc.send(JSON.stringify({ type: "file-error", transferId: rec.transferId, motivo: "Falha de integridade SHA-256." })); } catch { /* noop */ }
+                    emitir("physicalcloud:transfer-erro", { sessaoId, transferId: rec.transferId, motivo: "Arquivo corrompido (SHA-256 não confere)." });
+                    recebimentos.delete(sessaoId);
+                    ativasRecebimento.delete(sessaoId);
+                    return;
+                }
+
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = rec.nome;
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 5000);
+
+                try { dc.send(JSON.stringify({ type: "file-ok", transferId: rec.transferId })); } catch { /* noop */ }
+                recebimentos.delete(sessaoId);
+                ativasRecebimento.delete(sessaoId);
+                emitir("physicalcloud:transfer-concluido", {
+                    transferId: rec.transferId, sessaoId, nome: rec.nome, tamanho: rec.tamanho, direcao: "recebimento",
+                });
+            }
+            break;
+        }
+
+        case "file-cancel": {
+            // Recebimento
+            const rec = recebimentos.get(sessaoId);
+            if (rec && rec.transferId === msg.transferId) {
+                if (rec.writerHandle) { try { await rec.writerHandle.abort(); } catch { /* noop */ } }
+                recebimentos.delete(sessaoId);
+                ativasRecebimento.delete(sessaoId);
+            }
+
+            // Envio
+            const tidEnvio = ativasEnvio.get(sessaoId);
+            if (tidEnvio && tidEnvio === msg.transferId) {
+                const e = transferencias.get(tidEnvio);
+                if (e) {
+                    e.estado = "cancelado";
+                    if (typeof e.cancelarPausa === "function") e.cancelarPausa();
+                    // @ts-ignore
+                    emitirCancelamento(e, sessaoId);
+                }
+                // [Fix.10] rejeita aceitação pendente — antes a coroutine ficava
+                // pendurada 30 s (timeout) após o peer cancelar nesta fase.
+                rejeitarAceitacaoPendente(msg.transferId, "Cancelado pelo peer.");
+                cancelarTimeoutOk(msg.transferId);
+                limparSeProprio(sessaoId, msg.transferId);
+                processarFila(sessaoId);
+            } else {
+                emitir("physicalcloud:transfer-cancelado", { sessaoId, transferId: msg.transferId });
+            }
+            break;
+        }
+
+        case "file-ok": {
+            const tid = msg.transferId;
+            const entrada = transferencias.get(tid);
+            if (!entrada) break;
+            const { nome, tamanho } = entrada;
+            cancelarTimeoutOk(tid);
+            limparSeProprio(sessaoId, tid);
+            emitir("physicalcloud:transfer-concluido", {
+                transferId: tid, sessaoId, nome, tamanho, direcao: "envio",
+            });
+            processarFila(sessaoId);
+            break;
+        }
+
+        case "file-error": {
+            const tid = msg.transferId;
+            const entrada = transferencias.get(tid);
+            // [Fix.10] mesmo não encontrando entrada, pode haver aguardarAceitacao
+            // pendente (peer mandou erro antes de file-accept).
+            rejeitarAceitacaoPendente(tid, msg.motivo || "Receptor reportou erro.");
+            if (!entrada) break;
+            const motivo = msg.motivo || "Receptor reportou erro desconhecido.";
+            entrada.estado = "erro";
+            cancelarTimeoutOk(tid);
+            limparSeProprio(sessaoId, tid);
+            emitir("physicalcloud:transfer-erro", { transferId: tid, sessaoId, motivo });
+            processarFila(sessaoId);
+            break;
+        }
+    }
+}
+
+/**
+ * @param {string} sessaoId
+ * @param {BlobPart} data
+ * @param {{ readyState: string; send: (arg0: string) => void; }} dc
+ */
+async function tratarChunk(sessaoId, data, dc) {
+    const rec = recebimentos.get(sessaoId);
+    if (!rec) return;
+
+    if (rec.writerHandle) {
+        try {
+            await rec.writerHandle.write(data);
+        } catch (e) {
+            console.error("Erro ao escrever chunk em disco:", e);
+            // [Fix.15] Se durante o await outra rota (cancelarTransferencia,
+            // sessao-encerrada ou novo file-offer) já removeu/substituiu este
+            // rec, não emite erro por cima do cancelado que ela já emitiu.
+            if (recebimentos.get(sessaoId) !== rec) return;
+            try { if (dc.readyState === "open") dc.send(JSON.stringify({ type: "file-cancel", transferId: rec.transferId })); } catch { /* noop */ }
+            await rec.writerHandle.abort().catch(() => {});
+            recebimentos.delete(sessaoId);
+            ativasRecebimento.delete(sessaoId);
+            emitir("physicalcloud:transfer-erro", {
+                sessaoId, transferId: rec.transferId, motivo: "Erro ao escrever no disco.",
+            });
+            return;
+        }
+    } else {
+        rec.chunks.push(data);
+    }
+
+    const tamanhoChunk = typeof data === "string"
+        ? new TextEncoder().encode(data).byteLength
+        : data instanceof Blob
+            ? data.size
+            : data instanceof ArrayBuffer || ArrayBuffer.isView(data)
+                ? data.byteLength
+                : 0;
+    rec.recebidos += tamanhoChunk;
+    emitir("physicalcloud:transfer-progresso", {
+        transferId: rec.transferId, sessaoId, enviados: rec.recebidos, total: rec.tamanho,
+        timestamp: Date.now(),
+    });
+}
+
+// ─── Integração com WebRTC ──────────────────────────────────────────────────
+
+window.addEventListener("physicalcloud:canal-aberto", (event) => {
+    const { sessaoId, dc } = /** @type {CustomEvent} */ (event).detail;
+    canais.set(sessaoId, dc);
+
+    /** @type {{ fila: Array<() => Promise<void>>, ocupado: boolean, cancelado: boolean }} */
+    const ctrl = { fila: [], ocupado: false, cancelado: false };
+    controladoresFila.set(sessaoId, ctrl);
+
+    function processar() {
+        if (ctrl.cancelado || ctrl.ocupado) return;
+        ctrl.ocupado = true;
+        (async () => {
+            while (!ctrl.cancelado && ctrl.fila.length > 0) {
+                const tarefa = ctrl.fila.shift();
+                if (tarefa) {
+                    try { await tarefa(); } catch (e) { console.error("Erro na fila:", e); }
+                }
+            }
+            ctrl.ocupado = false;
+        })();
+    }
+
+    /**
+     * @param {{ (): Promise<void>; (): Promise<void>; (): Promise<void>; }} fn
+     */
+    function enfileirar(fn) {
+        if (ctrl.cancelado) return;
+        ctrl.fila.push(fn);
+        processar();
+    }
+
+    dc.addEventListener("message", (/** @type {{ data: string; }} */ ev) => {
+        if (typeof ev.data === "string") {
+            let msg;
+            try { msg = JSON.parse(ev.data); } catch { msg = null; }
+            if (msg && typeof msg.type === "string" && msg.type.startsWith("file-")) {
+                enfileirar(() => tratarMensagemJson(sessaoId, msg, dc, enfileirar));
+            }
+        // @ts-ignore
+        } else if (ev.data instanceof ArrayBuffer) {
+            if (ativasRecebimento.has(sessaoId)) {
+                enfileirar(() => tratarChunk(sessaoId, ev.data, dc));
+            }
+        }
+    });
+});
+
+window.addEventListener("physicalcloud:sessao-encerrada", (event) => {
+    const { sessaoId } = /** @type {CustomEvent} */ (event).detail;
+    canais.delete(sessaoId);
+    filas.delete(sessaoId);
+
+    const ctrl = controladoresFila.get(sessaoId);
+    if (ctrl) {
+        ctrl.cancelado = true;
+        ctrl.fila.length = 0;
+        controladoresFila.delete(sessaoId);
+    }
+
+    const tidEnvio = ativasEnvio.get(sessaoId);
+    if (tidEnvio) {
+        const entrada = transferencias.get(tidEnvio);
+        if (entrada) {
+            entrada.estado = "cancelado";
+            if (typeof entrada.cancelarPausa === "function") entrada.cancelarPausa();
+            // @ts-ignore
+            emitirCancelamento(entrada, sessaoId);
+        }
+        // [Fix.10] rejeita aguardarAceitacao pendente
+        rejeitarAceitacaoPendente(tidEnvio, "Sessão encerrada.");
+        cancelarTimeoutOk(tidEnvio);
+        transferencias.delete(tidEnvio);
+        ativasEnvio.delete(sessaoId);
+    }
+
+    const tidRec = ativasRecebimento.get(sessaoId);
+    if (tidRec) {
+        const rec = recebimentos.get(sessaoId);
+        if (rec) {
+            if (rec.writerHandle) rec.writerHandle.abort().catch(() => {});
+            recebimentos.delete(sessaoId);
+            emitir("physicalcloud:transfer-cancelado", { transferId: tidRec, sessaoId });
+        }
+        ativasRecebimento.delete(sessaoId);
     }
 });
 
-// [Fix.6] `api` mantido como objeto público; window.__pararServidor removido.
-/** @type {any} */ (window).PhysicalCloud = { enviar, sessoes, obterDeviceId, encerrarSessao, aviso };
+// ─── Botão "Enviar arquivo" ─────────────────────────────────────────────────
 
-conectarSocket();
+window.addEventListener("physicalcloud:solicitar-envio", () => {
+    if (canais.size === 0) {
+        window.dispatchEvent(new CustomEvent("physicalcloud:transfer-sem-canal"));
+        return;
+    }
+
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.style.display = "none";
+    document.body.appendChild(input);
+
+    const removerInput = () => { if (input.parentNode) document.body.removeChild(input); };
+    input.addEventListener("cancel", removerInput);
+
+    input.addEventListener("change", () => {
+        const arquivos = Array.from(input.files || []);
+        removerInput();
+        if (arquivos.length === 0) return;
+
+        const sessaoIds = Array.from(canais.keys());
+        if (sessaoIds.length === 1) {
+            enfileirarArquivos(sessaoIds[0], arquivos);
+        } else {
+            window.dispatchEvent(new CustomEvent("physicalcloud:escolher-destino", {
+                detail: { arquivos, sessaoIds },
+            }));
+        }
+    });
+
+    input.click();
+});
+
+// ─── API pública ────────────────────────────────────────────────────────────
+
+/** @type {any} */ (window).PhysicalCloudTransfer = {
+    enfileirarArquivos,
+    canais,
+    transferencias,
+    /**
+     * @param {string} transferId
+     */
+    cancelarTransferencia(transferId) {
+        if (!transferId) return;
+
+        let sessaoId = null;
+        /** @type {"envio"|"recebimento"|null} */
+        let sentido = null;
+
+        for (const [sid, tid] of ativasEnvio) {
+            if (tid === transferId) { sessaoId = sid; sentido = "envio"; break; }
+        }
+        if (!sessaoId) {
+            for (const [sid, tid] of ativasRecebimento) {
+                if (tid === transferId) { sessaoId = sid; sentido = "recebimento"; break; }
+            }
+        }
+        if (!sessaoId || !sentido) return;
+
+        const dc = canais.get(sessaoId);
+        if (dc && dc.readyState === "open") {
+            try { dc.send(JSON.stringify({ type: "file-cancel", transferId })); } catch { /* noop */ }
+        }
+
+        if (sentido === "envio") {
+            const entrada = transferencias.get(transferId);
+            if (entrada) {
+                entrada.estado = "cancelado";
+                if (typeof entrada.cancelarPausa === "function") entrada.cancelarPausa();
+                // @ts-ignore
+                emitirCancelamento(entrada, sessaoId);
+            }
+            rejeitarAceitacaoPendente(transferId, "Cancelado pelo usuário.");
+            cancelarTimeoutOk(transferId);
+            limparSeProprio(sessaoId, transferId);
+            processarFila(sessaoId);
+        } else {
+            const rec = recebimentos.get(sessaoId);
+            if (rec && rec.transferId === transferId) {
+                if (rec.writerHandle) rec.writerHandle.abort().catch(() => {});
+                recebimentos.delete(sessaoId);
+            }
+            ativasRecebimento.delete(sessaoId);
+            emitir("physicalcloud:transfer-cancelado", { transferId, sessaoId });
+        }
+    },
+};

@@ -17,6 +17,8 @@
 //   Qualquer lado pode cancelar com:
 //   JSON {type:"file-cancel", transferId}
 
+(() => {
+
 const TAMANHO_CHUNK = 256 * 1024;
 const BUFFER_ALTO   = 4 * 1024 * 1024;
 const BUFFER_BAIXO  = 512 * 1024;
@@ -727,3 +729,4 @@ window.addEventListener("physicalcloud:solicitar-envio", () => {
         emitir("physicalcloud:transfer-cancelado", { transferId, sessaoId });
     },
 };
+})();
