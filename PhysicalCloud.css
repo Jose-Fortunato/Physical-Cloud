@@ -714,6 +714,8 @@ body {
   gap: 8px;
   font-size: 32px;
   cursor: pointer;
+  justify-content: center;
+  margin-bottom: 16px;
 }
 .star {
   color: #444;
@@ -722,12 +724,32 @@ body {
 .star:hover {
   transform: scale(1.1);
 }
-
-/* Ajuste na sidebar para o botão de feedback ficar no rodapé */
-.sidebar {
-  justify-content: flex-start;
+.star.active {
+  color: var(--accent);
 }
+
+/* Botão de Feedback na Sidebar (Integrado à paleta) */
 #btn-abrir-feedback {
   margin-top: auto !important;
   border-top: 1px solid #2a2a2a !important;
+  border-radius: 0;
+  padding-top: 16px;
+  color: var(--text-muted);
+}
+#btn-abrir-feedback:hover {
+  color: var(--accent);
+  background: transparent; /* Evita o destaque do hover padrão */
+}
+
+/* Ajustes no modal de feedback */
+#modal-feedback .modal-box {
+  max-width: 400px;
+}
+#modal-feedback select,
+#modal-feedback textarea {
+  outline: none;
+}
+#modal-feedback select:focus,
+#modal-feedback textarea:focus {
+  border-color: var(--accent);
 }

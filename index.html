@@ -168,13 +168,15 @@
     </div>
   </div>
 
-  <!-- Botão de Acesso ao Feedback (Discreto, fixo no rodapé da sidebar) -->
-  <button class="nav-item" id="btn-abrir-feedback" style="margin-top: auto; border-top: 1px solid #2a2a2a; color: #9a9a9a; font-size: 12px;">★ Avaliar o App</button>
-  <button class="btn-tornar-servidor" id="btn-tornar-servidor">Se tornar o dispositivo servidor</button>
+  <button class="nav-item" id="btn-abrir-feedback">★ Avaliar o App</button>
 
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  
   <script src="PhysicalCloud.js"></script>
   <script src="PhysicalCloud-webrtc.js"></script>
   <script src="PhysicalCloud-transfer.js"></script>
+  <script src="PhysicalCloud-feedback.js"></script>
   <script>
     // ─── Sidebar mobile ───────────────────────────────────────────────────────
     const sidebar = document.getElementById("sidebar");
