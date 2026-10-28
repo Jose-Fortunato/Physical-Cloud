@@ -1,7 +1,7 @@
 // PhysicalCloud-feedback.js
 // @ts-check
 
-const SUPABASE_URL = "https://eiafcjslezluzvuzvzrya.supabase.co";
+const SUPABASE_URL = "https://eiafcjslezluvzuvzrya.supabase.co";
 const SUPABASE_KEY = "sb_publishable_gvks3F8zU-96KKQn7SJv4w_ASEr3Y6Y";
 
 // Inicializa o cliente Supabase (usando a variável global criada pelo CDN no HTML)
