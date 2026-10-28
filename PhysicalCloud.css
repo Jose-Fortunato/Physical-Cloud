@@ -732,13 +732,15 @@ body {
 #btn-abrir-feedback {
   margin-top: auto !important;
   border-top: 1px solid #2a2a2a !important;
-  border-radius: 0;
-  padding-top: 16px;
-  color: var(--text-muted);
+  border-radius: 6px;
+  padding: 10px 12px;
+  color: var(--accent); /* texto verde */
+  font-weight: 600;
+  text-align: left;
 }
 #btn-abrir-feedback:hover {
+  background: var(--bg-hover);
   color: var(--accent);
-  background: transparent; /* Evita o destaque do hover padrão */
 }
 
 /* Ajustes no modal de feedback */
