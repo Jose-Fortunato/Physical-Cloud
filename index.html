@@ -67,18 +67,16 @@
             <select id="destino-select" class="destino-select"></select>
           </div>
 
-          <div id="servidor-acoes" style="display:none; margin-bottom: 16px;">
-             <button class="secondary-btn" id="btn-compartilhar-pasta" style="border-color: var(--accent); color: var(--accent); width: 100%;">
-                📂 Puxar arquivos do dispositivo conectado
-             </button>
-          </div>
-
           <div class="nuvem-acoes">
             <button class="primary-btn" id="btn-enviar">
               <span class="btn-icon">&#8679;</span> Selecionar e Enviar arquivo
             </button>
-            <button class="secondary-btn" id="btn-explorar-servidor" style="display: none;">
-              🔍 Puxar dados do dispositivo servidor
+            <button class="secondary-btn" id="btn-enviar-pasta">📁 Selecionar Pasta</button>
+            <button class="secondary-btn" id="btn-compartilhar-pasta" style="display:none; border-color: var(--accent); color: var(--accent);">
+              📂 Puxar arquivos do dispositivo conectado
+            </button>
+            <button class="secondary-btn" id="btn-explorar-servidor" style="display:none; border-color: var(--accent); color: var(--accent);">
+              🔍 Puxar arquivos do servidor
             </button>
           </div>
 
@@ -96,12 +94,13 @@
     </main>
   </div>
 
+  <!-- Modal de código (servidor) -->
   <div class="modal-overlay" id="modal-codigo">
     <div class="modal-box">
       <button class="modal-close" id="btn-fechar-modal">&times;</button>
-      <h2>Seu dispositivo virou o servidor</h2>
-      <p class="subtitle">Use este código no outro dispositivo para conectar:</p>
-      <div class="codigo-display" id="codigo-texto" aria-hidden="true"></div>
+      <h2>Seu código de conexão</h2>
+      <p class="modal-subtitle">Compartilhe este código com o outro dispositivo para conectá-lo.</p>
+      <p class="codigo-display" id="codigo-texto"></p>
       <div class="code-container">
         <div class="code-digit"></div>
         <div class="code-digit"></div>
@@ -113,74 +112,107 @@
     </div>
   </div>
 
+  <!-- Modal de conectar -->
   <div class="modal-overlay" id="modal-conectar">
     <div class="modal-box">
       <button class="modal-close" id="btn-fechar-conectar">&times;</button>
       <h2>Conectar a um dispositivo</h2>
-      <p class="modal-subtitle">Digite o código do dispositivo servidor:</p>
-      <div class="code-input-container" id="inserir-Codigo">
-        <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="code-input-box" data-index="0">
-        <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="code-input-box" data-index="1">
-        <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="code-input-box" data-index="2">
-        <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="code-input-box" data-index="3">
-        <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="code-input-box" data-index="4">
-        <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="1" class="code-input-box" data-index="5">
+      <p class="modal-subtitle">Digite o código de 6 dígitos exibido no outro dispositivo.</p>
+      <div class="code-input-container">
+        <input class="code-input-box" type="text" inputmode="numeric" maxlength="1" autocomplete="off" />
+        <input class="code-input-box" type="text" inputmode="numeric" maxlength="1" autocomplete="off" />
+        <input class="code-input-box" type="text" inputmode="numeric" maxlength="1" autocomplete="off" />
+        <input class="code-input-box" type="text" inputmode="numeric" maxlength="1" autocomplete="off" />
+        <input class="code-input-box" type="text" inputmode="numeric" maxlength="1" autocomplete="off" />
+        <input class="code-input-box" type="text" inputmode="numeric" maxlength="1" autocomplete="off" />
       </div>
     </div>
   </div>
 
+  <!-- Modal de recebimento (operação inteira — autorização única) -->
   <div class="modal-overlay" id="modal-recebimento">
     <div class="modal-box">
-      <h2>Receber arquivo?</h2>
-      <p class="subtitle" id="recebimento-texto">Um dispositivo quer enviar um arquivo.</p>
-      <div class="recebimento-info" style="background: #121212; padding: 12px; border-radius: 8px; margin-bottom: 24px; border: 1px solid #2a2a2a;">
-        <div style="font-weight: 600; color: #fff;" id="recebimento-nome">arquivo.zip</div>
+      <h2>Receber arquivos?</h2>
+      <p class="subtitle" id="recebimento-texto">Um dispositivo quer enviar arquivos.</p>
+      <div class="recebimento-info" style="background: #121212; padding: 12px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #2a2a2a; text-align: left;">
+        <div style="font-weight: 600; color: #fff;" id="recebimento-nome">0 arquivos</div>
         <div style="font-size: 12px; color: #9a9a9a; margin-top: 4px;" id="recebimento-tamanho">0 MB</div>
+        <div id="recebimento-lotes" style="font-size: 12px; color: #ffd280; margin-top: 6px; display: none;"></div>
       </div>
+      <p style="font-size: 12px; color: #9a9a9a; margin-bottom: 16px; text-align: left; line-height: 1.5;">
+        Você autoriza uma única vez. Os arquivos serão gravados automaticamente no destino escolhido, sem novas confirmações.
+      </p>
+      <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 16px; font-size: 13px; color: #9a9a9a;">
+        <input type="checkbox" id="nao-mostrar-recebimento">
+        Não mostrar esta mensagem novamente
+      </label>
       <div style="display: flex; gap: 12px; justify-content: center;">
-        <button class="primary-btn" id="btn-aceitar-recebimento">Aceitar e Salvar</button>
+        <button class="primary-btn" id="btn-aceitar-recebimento">Selecionar destino e aceitar</button>
         <button class="secondary-btn" id="btn-recusar-recebimento" style="color: #ff6b6b; border-color: #ff6b6b;">Recusar</button>
       </div>
     </div>
   </div>
 
+  <!-- Modal de feedback -->
   <div class="modal-overlay" id="modal-feedback">
-    <div class="modal-box" style="text-align: left;">
+    <div class="modal-box">
       <button class="modal-close" id="btn-fechar-feedback">&times;</button>
-      <h2>Avalie o Physical Cloud</h2>
-      <p class="subtitle">Sua opinião nos ajuda a melhorar.</p>
-      <div class="star-rating" id="star-rating" style="margin-bottom: 16px;">
-        <span class="star" data-value="1">★</span>
-        <span class="star" data-value="2">★</span>
-        <span class="star" data-value="3">★</span>
-        <span class="star" data-value="4">★</span>
-        <span class="star" data-value="5">★</span>
+      <h2>Avaliar o App</h2>
+      <p class="subtitle">Sua avaliação nos ajuda a melhorar.</p>
+      <div class="star-rating" id="star-rating">
+        <span class="star" data-nota="1">★</span>
+        <span class="star" data-nota="2">★</span>
+        <span class="star" data-nota="3">★</span>
+        <span class="star" data-nota="4">★</span>
+        <span class="star" data-nota="5">★</span>
       </div>
-      <label style="display: block; font-size: 14px; margin-bottom: 8px; color: #9a9a9a;">Categoria:</label>
-      <select id="feedback-categoria" class="destino-select" style="width: 100%; margin-bottom: 16px;">
-        <option value="sugestao">Sugestão de melhoria</option>
-        <option value="bug">Relatar um bug</option>
-        <option value="usabilidade">Problema de usabilidade</option>
+      <select id="feedback-categoria" style="width: 100%; background: #121212; color: #fff; border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 14px;">
+        <option value="elogio">Elogio</option>
+        <option value="sugestao">Sugestão</option>
+        <option value="bug">Bug</option>
         <option value="outro">Outro</option>
       </select>
-      <textarea id="feedback-texto" placeholder="Conte-nos o que aconteceu ou sua sugestão..." style="width: 100%; height: 100px; background: #121212; border: 1px solid #2a2a2a; border-radius: 8px; padding: 12px; color: #fff; font-family: inherit; resize: vertical; margin-bottom: 16px;"></textarea>
-      <div style="display: flex; gap: 12px; justify-content: flex-end;">
-        <button class="secondary-btn" id="btn-enviar-feedback">Enviar Feedback</button>
-      </div>
-      <p id="feedback-status" style="font-size: 12px; margin-top: 12px; display: none;"></p>
+      <textarea id="feedback-texto" rows="4" placeholder="Conte-nos mais (opcional)" style="width: 100%; background: #121212; color: #fff; border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 14px; resize: vertical; font-family: inherit;"></textarea>
+      <p id="feedback-status" style="display: none; font-size: 13px; margin-bottom: 12px;"></p>
+      <button class="primary-btn" id="btn-enviar-feedback">Enviar Feedback</button>
     </div>
   </div>
 
+  <!-- Modal do Explorador Remoto -->
   <div class="modal-overlay" id="modal-explorador">
     <div class="modal-box" style="text-align: left; max-width: 640px; display: flex; flex-direction: column; max-height: 85vh;">
       <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
         <button id="btn-explorador-voltar" class="secondary-btn" style="padding: 6px 12px; display: none;">← Voltar</button>
-        <h2 style="margin: 0; font-size: 18px; flex: 1;">Arquivos no dispositivo</h2>
+        <h2 style="margin: 0; font-size: 18px; flex: 1;">Arquivos no dispositivo remoto</h2>
         <button class="modal-close" id="btn-fechar-explorador" style="position: static;">&times;</button>
       </div>
       <p class="subtitle" id="explorador-caminho" style="margin-bottom: 8px; font-size: 12px; color: var(--text-muted);">Raiz</p>
       <p class="subtitle" id="explorador-status" style="margin-bottom: 12px;">Carregando...</p>
-      <div id="lista-explorador" class="explorer-list">
+      <div id="lista-explorador" class="explorer-list"></div>
+      <div id="explorador-paginacao" style="display:none; margin-top: 12px; gap: 8px; align-items: center; justify-content: space-between;">
+        <button class="secondary-btn" id="btn-pagina-anterior" style="padding: 6px 12px;">← Anterior</button>
+        <span id="explorador-pagina-texto" style="font-size: 12px; color: var(--text-muted);">Página 1 / 1</span>
+        <button class="secondary-btn" id="btn-pagina-proxima" style="padding: 6px 12px;">Próxima →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal de aviso de lote (>100 arquivos) -->
+  <div class="modal-overlay" id="modal-lote">
+    <div class="modal-box" style="text-align: left;">
+      <h2>Transferência em lotes</h2>
+      <p class="subtitle" id="lote-total">Você selecionou vários arquivos.</p>
+      <p style="font-size: 14px; color: #ccc; line-height: 1.6; margin-bottom: 20px;">
+        Para garantir uma transferência estável, processaremos os arquivos em blocos de até 100 por vez.
+        Após a conclusão de cada bloco, iniciaremos automaticamente o próximo até que todos os arquivos sejam transferidos.
+        <br><br>Não é necessário realizar nenhuma ação adicional.
+      </p>
+      <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 20px; font-size: 13px; color: #9a9a9a;">
+        <input type="checkbox" id="nao-mostrar-lote">
+        Não mostrar esta mensagem novamente
+      </label>
+      <div style="display: flex; gap: 12px; justify-content: flex-end;">
+        <button class="primary-btn" id="btn-ok-lote">Entendi</button>
       </div>
     </div>
   </div>
@@ -188,18 +220,21 @@
   <button class="btn-tornar-servidor" id="btn-tornar-servidor">Se tornar o dispositivo servidor</button>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
-  
   <script src="PhysicalCloud.js"></script>
   <script src="PhysicalCloud-webrtc.js"></script>
   <script src="PhysicalCloud-transfer.js"></script>
   <script src="PhysicalCloud-feedback.js"></script>
   <script>
-    // ─── Sidebar mobile ───────────────────────────────────────────────────────
-    const sidebar = document.getElementById("sidebar");
-    const sidebarToggle = document.getElementById("sidebar-toggle");
-    const sidebarOverlay = document.getElementById("sidebar-overlay");
+    // ═══════════════════════════════════════════════════════════════════════
+    // PHYSICAL CLOUD — UI ORQUESTRADOR
+    // ═══════════════════════════════════════════════════════════════════════
 
-    sidebarToggle?.addEventListener("click", () => {
+    const $ = (id) => document.getElementById(id);
+
+    // ─── Sidebar mobile ─────────────────────────────────────────────────────
+    const sidebar = $("sidebar");
+    const sidebarOverlay = $("sidebar-overlay");
+    $("sidebar-toggle")?.addEventListener("click", () => {
       sidebar?.classList.toggle("open");
       sidebarOverlay?.classList.toggle("active");
     });
@@ -207,139 +242,296 @@
       sidebar?.classList.remove("open");
       sidebarOverlay?.classList.remove("active");
     });
-    document.querySelectorAll(".nav-item[data-tab]").forEach(btn => {
+
+    // ─── Abas ───────────────────────────────────────────────────────────────
+    document.querySelectorAll(".nav-item[data-tab]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        sidebar?.classList.remove("open");
-        sidebarOverlay?.classList.remove("active");
+        const alvo = btn.dataset.tab;
+        if (!alvo) return;
+        document.querySelectorAll(".nav-item[data-tab]").forEach((b) => b.classList.remove("active"));
+        document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
+        btn.classList.add("active");
+        document.getElementById(alvo)?.classList.add("active");
+        if (window.innerWidth <= 768) {
+          sidebar?.classList.remove("open");
+          sidebarOverlay?.classList.remove("active");
+        }
       });
     });
-
-    // ─── Aba Nuvem: estado (com/sem canal) ───────────────────────────────────
-    const nuvemSemCanal  = document.getElementById("nuvem-sem-canal");
-    const nuvemComCanal  = document.getElementById("nuvem-com-canal");
-    const destinoContainer = document.getElementById("destino-container");
-    const destinoSelect  = /** @type {HTMLSelectElement} */ (document.getElementById("destino-select"));
-    const transfersAtivos = document.getElementById("transfers-ativos");
-    const listaTransfers  = document.getElementById("lista-transfers");
-    const recebidosContainer = document.getElementById("recebidos-container");
-    const listaRecebidos  = document.getElementById("lista-recebidos");
-
-    document.getElementById("btn-ir-dispositivos")?.addEventListener("click", () => {
-      document.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
-      document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
-      document.querySelector(".nav-item[data-tab='dispositivos']")?.classList.add("active");
-      document.getElementById("dispositivos")?.classList.add("active");
+    $("btn-ir-dispositivos")?.addEventListener("click", () => {
+      document.querySelector('.nav-item[data-tab="dispositivos"]')?.click();
     });
+
+    // ─── Estado da nuvem e botões do explorador ─────────────────────────────
+    function obterSessoes() {
+      return window.PhysicalCloud?.sessoes || new Map();
+    }
 
     function atualizarEstadoNuvem() {
-      const t = /** @type {any} */ (window).PhysicalCloudTransfer;
-      const canais = t ? t.canais : new Map();
-      const temCanal = canais && canais.size > 0;
+      const canais = window.PhysicalCloudTransfer?.canais;
+      const temCanal = !!(canais && canais.size > 0);
+      $("nuvem-sem-canal").style.display = temCanal ? "none" : "";
+      $("nuvem-com-canal").style.display = temCanal ? "" : "none";
 
-      if (nuvemSemCanal)  nuvemSemCanal.style.display  = temCanal ? "none" : "";
-      if (nuvemComCanal)  nuvemComCanal.style.display   = temCanal ? "" : "none";
-
-      if (!temCanal || !destinoContainer || !destinoSelect) return;
-
-      const sessaoIds = Array.from(canais.keys());
-      if (sessaoIds.length > 1) {
-        destinoContainer.style.display = "";
-        const sessoes = /** @type {any} */ (window).PhysicalCloud?.sessoes;
-        destinoSelect.replaceChildren();
-        for (const sid of sessaoIds) {
-          const opt = document.createElement("option");
-          opt.value = sid;
-          const s = sessoes?.get(sid);
-          opt.textContent = s ? s.nome : sid.slice(0, 8) + "…";
-          destinoSelect.appendChild(opt);
-        }
-      } else {
-        destinoContainer.style.display = "none";
+      const select = $("destino-select");
+      const container = $("destino-container");
+      if (!select || !container) return;
+      const sessoes = obterSessoes();
+      if (!temCanal || sessoes.size === 0) { container.style.display = "none"; return; }
+      container.style.display = sessoes.size > 1 ? "" : "none";
+      select.innerHTML = "";
+      for (const [sid, s] of sessoes) {
+        const opt = document.createElement("option");
+        opt.value = sid;
+        opt.textContent = s.nome || "Dispositivo";
+        select.appendChild(opt);
       }
     }
 
-    window.addEventListener("physicalcloud:canal-aberto",    atualizarEstadoNuvem);
-    window.addEventListener("physicalcloud:sessao-encerrada", atualizarEstadoNuvem);
-    document.querySelectorAll(".nav-item[data-tab='nuvem']").forEach(btn => {
-      btn.addEventListener("click", atualizarEstadoNuvem);
+    function atualizarBotoesExplorador() {
+      const sessoes = obterSessoes();
+      let souServidor = false, souCliente = false;
+      for (const [, s] of sessoes) {
+        if (s.papel === "servidor") souServidor = true;
+        if (s.papel === "cliente") souCliente = true;
+      }
+      const btnCompartilhar = $("btn-compartilhar-pasta");
+      const btnExplorar = $("btn-explorar-servidor");
+      if (btnCompartilhar) btnCompartilhar.style.display = souServidor ? "" : "none";
+      if (btnExplorar) btnExplorar.style.display = souCliente ? "" : "none";
+    }
+
+    window.addEventListener("physicalcloud:canal-aberto", () => { atualizarEstadoNuvem(); atualizarBotoesExplorador(); });
+    window.addEventListener("physicalcloud:sessao-ativa", () => { atualizarEstadoNuvem(); atualizarBotoesExplorador(); });
+    window.addEventListener("physicalcloud:sessao-encerrada", () => { atualizarEstadoNuvem(); atualizarBotoesExplorador(); });
+    window.addEventListener("physicalcloud:sessao-pronta-para-ui", () => { atualizarEstadoNuvem(); atualizarBotoesExplorador(); });
+    window.addEventListener("physicalcloud:transfer-sem-canal", () => {
+      window.PhysicalCloud?.aviso?.("Nenhum dispositivo conectado.");
     });
 
-    // ─── Controle de visibilidade dos botões do explorador ───
-    function atualizarBotoesExplorador() {
-      const sessoes = /** @type {any} */ (window).PhysicalCloud?.sessoes;
-      if (!sessoes) return;
-
-      let souServidorNestaSessao = false;
-      let souClienteNestaSessao = false;
-      for (const [sid, s] of sessoes) {
-        if (s.papel === "servidor") souServidorNestaSessao = true;
-        if (s.papel === "cliente") souClienteNestaSessao = true;
-      }
-
-      const btnCompartilhar = document.getElementById("btn-compartilhar-pasta");
-      const btnExplorar = document.getElementById("btn-explorar-servidor");
-      
-      if (btnCompartilhar) btnCompartilhar.parentElement.style.display = souServidorNestaSessao ? "" : "none";
-      if (btnExplorar) btnExplorar.style.display = souClienteNestaSessao ? "" : "none";
+    // ─── Helpers de formato ─────────────────────────────────────────────────
+    function formatarTamanho(bytes) {
+      if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+      if (bytes < 1024) return bytes + " B";
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+      if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+      return (bytes / (1024 * 1024 * 1024)).toFixed(2) + " GB";
     }
 
-    window.addEventListener("physicalcloud:canal-aberto", atualizarBotoesExplorador);
-    window.addEventListener("physicalcloud:sessao-ativa", atualizarBotoesExplorador);
+    function formatarEta(segundos) {
+      if (!Number.isFinite(segundos) || segundos <= 0) return "—";
+      if (segundos < 60) return Math.ceil(segundos) + "s";
+      if (segundos < 3600) return Math.floor(segundos / 60) + "m " + Math.ceil(segundos % 60) + "s";
+      return Math.floor(segundos / 3600) + "h " + Math.ceil((segundos % 3600) / 60) + "m";
+    }
 
-    // ─── CORREÇÃO CRÍTICA: Chamar showDirectoryPicker DIRETAMENTE no clique ───
-    document.getElementById("btn-compartilhar-pasta")?.addEventListener("click", async () => {
-      // Verifica se a API existe antes de tentar usar
-      if (!("showDirectoryPicker" in window)) {
-        const isAndroid = /Android/i.test(navigator.userAgent);
-        const msg = isAndroid
-          ? "Para compartilhar uma pasta no celular, atualize o Chrome para a versão 132 ou superior. Se não conseguir atualizar, você ainda pode enviar arquivos usando o botão 'Selecionar e Enviar arquivo'."
-          : "Seu navegador não suporta a API de seleção de pastas. Use o Chrome ou Edge atualizado no computador.";
-        alert(msg);
+    function obterSessaoAlvo(sessaoIdPreferida) {
+      if (sessaoIdPreferida) return sessaoIdPreferida;
+      const select = $("destino-select");
+      if (select && select.value) return select.value;
+      const canais = window.PhysicalCloudTransfer?.canais;
+      if (canais && canais.size === 1) return Array.from(canais.keys())[0];
+      return null;
+    }
+
+    // ─── Aviso de lote (> 100 arquivos) ────────────────────────────────────
+    function confirmarLoteSeNecessario(total) {
+      if (total <= 100) return Promise.resolve();
+      if (localStorage.getItem("physicalCloudNaoMostrarAvisoLote") === "true") return Promise.resolve();
+      return new Promise((resolve) => {
+        const modal = $("modal-lote");
+        $("lote-total").textContent = `Você selecionou ${total} arquivos.`;
+        const chk = $("nao-mostrar-lote");
+        chk.checked = false;
+        const fechar = () => {
+          if (chk.checked) localStorage.setItem("physicalCloudNaoMostrarAvisoLote", "true");
+          modal.classList.remove("active");
+          const btn = $("btn-ok-lote");
+          if (btn) btn.onclick = null;
+          resolve();
+        };
+        $("btn-ok-lote").onclick = fechar;
+        modal.classList.add("active");
+      });
+    }
+
+    // ─── Envio de arquivos ─────────────────────────────────────────────────
+    async function iniciarEnvioArquivos(arquivos, sessaoIdPreferida) {
+      if (!arquivos || arquivos.length === 0) return;
+      await confirmarLoteSeNecessario(arquivos.length);
+      const sessaoId = obterSessaoAlvo(sessaoIdPreferida);
+      if (!sessaoId) { window.PhysicalCloud?.aviso?.("Selecione um dispositivo de destino."); return; }
+      window.PhysicalCloudTransfer.enfileirarArquivos(sessaoId, arquivos);
+    }
+
+    $("btn-enviar")?.addEventListener("click", () => {
+      const input = document.createElement("input");
+      input.type = "file"; input.multiple = true; input.style.display = "none";
+      document.body.appendChild(input);
+      const limpar = () => { if (input.parentNode) document.body.removeChild(input); };
+      input.addEventListener("cancel", limpar);
+      input.addEventListener("change", () => {
+        const arquivos = Array.from(input.files || []);
+        limpar();
+        iniciarEnvioArquivos(arquivos);
+      });
+      input.click();
+    });
+
+    $("btn-enviar-pasta")?.addEventListener("click", () => {
+      const input = document.createElement("input");
+      input.type = "file"; input.webkitdirectory = true; input.multiple = true; input.style.display = "none";
+      document.body.appendChild(input);
+      const limpar = () => { if (input.parentNode) document.body.removeChild(input); };
+      input.addEventListener("cancel", limpar);
+      input.addEventListener("change", () => {
+        const arquivos = Array.from(input.files || []);
+        limpar();
+        iniciarEnvioArquivos(arquivos);
+      });
+      input.click();
+    });
+
+    // ─── Explorador remoto ─────────────────────────────────────────────────
+    const estadoExplorador = {
+      sessaoId: null, caminho: "", pagina: 1, totalPaginas: 1, carregando: false,
+    };
+
+    function encontrarSessaoPorPapel(papel) {
+      const sessoes = obterSessoes();
+      for (const [sid, s] of sessoes) {
+        if (s.papel === papel) return sid;
+      }
+      return null;
+    }
+
+    function resetarExplorador() {
+      estadoExplorador.sessaoId = null;
+      estadoExplorador.caminho = "";
+      estadoExplorador.pagina = 1;
+      estadoExplorador.totalPaginas = 1;
+      estadoExplorador.carregando = false;
+      $("lista-explorador").innerHTML = "";
+      $("explorador-caminho").textContent = "Raiz";
+      $("explorador-status").textContent = "Aguardando autorização do dispositivo remoto...";
+      $("explorador-paginacao").style.display = "none";
+      $("btn-explorador-voltar").style.display = "none";
+    }
+
+    function iniciarExploracaoRemota() {
+      resetarExplorador();
+      $("modal-explorador").classList.add("active");
+
+      // Se eu sou servidor, exploro o cliente. Se sou cliente, exploro o servidor.
+      const ehServidor = !!encontrarSessaoPorPapel("servidor");
+      // Permite escolher entre várias sessões via <select> quando aplicável
+      const sessaoId = ehServidor
+        ? encontrarSessaoPorPapel("servidor")
+        : encontrarSessaoPorPapel("cliente");
+      if (!sessaoId) {
+        $("explorador-status").textContent = "Nenhum dispositivo para explorar.";
+        return;
+      }
+      estadoExplorador.sessaoId = sessaoId;
+
+      const ok = window.PhysicalCloudTransfer.solicitarCompartilhamentoRemoto(sessaoId);
+      if (!ok) { $("explorador-status").textContent = "Sessão indisponível."; return; }
+      $("explorador-status").textContent = "Aguardando autorização do outro dispositivo...";
+    }
+
+    $("btn-compartilhar-pasta")?.addEventListener("click", iniciarExploracaoRemota);
+    $("btn-explorar-servidor")?.addEventListener("click", iniciarExploracaoRemota);
+
+    $("btn-fechar-explorador")?.addEventListener("click", () => {
+      $("modal-explorador").classList.remove("active");
+    });
+
+    $("btn-explorador-voltar")?.addEventListener("click", () => {
+      if (!estadoExplorador.sessaoId) return;
+      const partes = estadoExplorador.caminho.split("/").filter(Boolean);
+      partes.pop();
+      estadoExplorador.caminho = partes.join("/");
+      estadoExplorador.pagina = 1;
+      solicitarListagemRemota();
+    });
+
+    $("btn-pagina-anterior")?.addEventListener("click", () => {
+      if (estadoExplorador.pagina <= 1 || estadoExplorador.carregando) return;
+      estadoExplorador.pagina--;
+      solicitarListagemRemota();
+    });
+
+    $("btn-pagina-proxima")?.addEventListener("click", () => {
+      if (estadoExplorador.pagina >= estadoExplorador.totalPaginas || estadoExplorador.carregando) return;
+      estadoExplorador.pagina++;
+      solicitarListagemRemota();
+    });
+
+    function solicitarListagemRemota() {
+      if (!estadoExplorador.sessaoId) return;
+      estadoExplorador.carregando = true;
+      $("explorador-status").textContent = "Carregando...";
+      window.dispatchEvent(new CustomEvent("physicalcloud:solicitar-exploracao", {
+        detail: {
+          sessaoId: estadoExplorador.sessaoId,
+          caminho: estadoExplorador.caminho,
+          pagina: estadoExplorador.pagina,
+        },
+      }));
+    }
+
+    // Resultado da autorização de compartilhamento
+    window.addEventListener("physicalcloud:share-folder-resultado", (ev) => {
+      const { sessaoId, sucesso, erro } = ev.detail;
+      if (sessaoId !== estadoExplorador.sessaoId) return;
+      if (!sucesso) {
+        $("explorador-status").textContent = erro || "Compartilhamento recusado.";
+        return;
+      }
+      estadoExplorador.caminho = "";
+      estadoExplorador.pagina = 1;
+      solicitarListagemRemota();
+    });
+
+    // Aviso quando EU sou solicitado a compartilhar uma pasta
+    window.addEventListener("physicalcloud:share-folder-solicitado", () => {
+      window.PhysicalCloud?.aviso?.("O outro dispositivo solicitou acesso a uma pasta.");
+    });
+
+    // Renderização da listagem
+    window.addEventListener("physicalcloud:lista-recebida", (ev) => {
+      if (!estadoExplorador.sessaoId) return;
+      const { itens, caminho, pagina, totalPaginas, totalItens, erro } = ev.detail;
+      estadoExplorador.carregando = false;
+
+      if (erro) {
+        $("explorador-status").textContent = erro;
+        $("lista-explorador").innerHTML = "";
+        $("explorador-paginacao").style.display = "none";
         return;
       }
 
-      try {
-        // Esta chamada DEVE ser feita aqui, dentro do handler de clique
-        const handle = await window.showDirectoryPicker({ mode: "read" });
-        // Dispara um evento para o PhysicalCloud-transfer.js registrar o handle
-        window.dispatchEvent(new CustomEvent("physicalcloud:pasta-selecionada", { detail: { handle } }));
-        alert("Pasta compartilhada com sucesso! O cliente já pode visualizar os arquivos.");
-      } catch (e) {
-        if (e.name !== "AbortError") {
-          console.error("Erro ao compartilhar pasta:", e);
-          alert("Não foi possível compartilhar a pasta: " + e.message);
-        }
-      }
-    });
+      estadoExplorador.pagina = pagina || 1;
+      estadoExplorador.totalPaginas = totalPaginas || 1;
+      estadoExplorador.caminho = caminho || "";
 
-    // ─── Lógica do Explorador Remoto (Citra Style) ───
-    let caminhoAtualExplorador = "";
-    let acumuladorItens = [];
-    let caminhoAtualRecebido = "";
-    let paginaAtualRecebida = 0;
-    let totalPaginasRecebidas = 0;
+      $("explorador-caminho").textContent = caminho ? "/" + caminho : "Raiz";
+      $("btn-explorador-voltar").style.display = caminho ? "" : "none";
 
-    function renderizarExplorador(itens, caminho) {
-      const lista = document.getElementById("lista-explorador");
-      const status = document.getElementById("explorador-status");
-      const caminhoEl = document.getElementById("explorador-caminho");
-      const btnVoltar = document.getElementById("btn-explorador-voltar");
-
+      const lista = $("lista-explorador");
       lista.innerHTML = "";
-      caminhoEl.textContent = caminho ? `/${caminho}` : "Raiz";
-      btnVoltar.style.display = caminho ? "" : "none";
-      status.style.color = "var(--text-muted)";
 
       if (!itens || itens.length === 0) {
-        status.textContent = "Pasta vazia.";
+        $("explorador-status").textContent = "Pasta vazia.";
+        $("explorador-paginacao").style.display = "none";
         return;
       }
 
-      status.textContent = `${itens.length} item(ns).`;
+      $("explorador-status").textContent = `${totalItens || itens.length} item(s) — página ${pagina}/${totalPaginas}`;
 
-      itens.forEach(item => {
-        const el = document.createElement("div");
-        el.className = "explorer-item";
+      for (const item of itens) {
+        const linha = document.createElement("div");
+        linha.className = "explorer-item";
 
         const icone = document.createElement("span");
         icone.className = "explorer-icon";
@@ -347,344 +539,419 @@
 
         const info = document.createElement("div");
         info.className = "explorer-info";
-
-        const nomeEl = document.createElement("div");
-        nomeEl.className = "explorer-name";
-        nomeEl.textContent = item.nome;
-
-        const detalhesEl = document.createElement("div");
-        detalhesEl.className = "explorer-details";
+        const nome = document.createElement("span");
+        nome.className = "explorer-name";
+        nome.textContent = item.nome;
+        info.appendChild(nome);
         if (item.tipo === "file") {
-          const tamanho = item.tamanho < 1024 * 1024
-            ? (item.tamanho / 1024).toFixed(1) + " KB"
-            : (item.tamanho / (1024 * 1024)).toFixed(1) + " MB";
-          detalhesEl.textContent = tamanho;
-        } else {
-          detalhesEl.textContent = "Pasta";
+          const det = document.createElement("span");
+          det.className = "explorer-details";
+          det.textContent = formatarTamanho(item.tamanho);
+          info.appendChild(det);
         }
 
-        info.appendChild(nomeEl);
-        info.appendChild(detalhesEl);
-        el.appendChild(icone);
-        el.appendChild(info);
+        const btnBaixar = document.createElement("button");
+        btnBaixar.className = "secondary-btn";
+        btnBaixar.style.padding = "4px 10px";
+        btnBaixar.style.fontSize = "12px";
+        btnBaixar.textContent = item.tipo === "directory" ? "⬇ Pasta" : "⬇";
+        btnBaixar.addEventListener("click", (evClick) => {
+          evClick.stopPropagation();
+          solicitarDownloadRemoto(item.caminho, item.tipo);
+        });
 
-        el.addEventListener("click", () => {
+        linha.append(icone, info, btnBaixar);
+
+        linha.addEventListener("click", () => {
           if (item.tipo === "directory") {
-            caminhoAtualExplorador = item.caminho;
-            window.dispatchEvent(new CustomEvent("physicalcloud:solicitar-exploracao", {
-              detail: { caminho: item.caminho },
-            }));
-            document.getElementById("explorador-status").textContent = "Carregando...";
-            document.getElementById("lista-explorador").innerHTML = "";
+            estadoExplorador.caminho = item.caminho;
+            estadoExplorador.pagina = 1;
+            solicitarListagemRemota();
           } else {
-            window.dispatchEvent(new CustomEvent("physicalcloud:solicitar-download-remoto", {
-              detail: { caminho: item.caminho },
-            }));
-            status.textContent = `Solicitando download de "${item.nome}"...`;
+            solicitarDownloadRemoto(item.caminho, "file");
           }
         });
 
-        lista.appendChild(el);
-      });
+        lista.appendChild(linha);
+      }
+
+      const paginacao = $("explorador-paginacao");
+      if (totalPaginas > 1) {
+        paginacao.style.display = "flex";
+        $("explorador-pagina-texto").textContent = `Página ${pagina} / ${totalPaginas}`;
+        $("btn-pagina-anterior").disabled = pagina <= 1;
+        $("btn-pagina-proxima").disabled = pagina >= totalPaginas;
+      } else {
+        paginacao.style.display = "none";
+      }
+    });
+
+    // Pull remoto (auto-aceita a operação resultante sem novo modal)
+    const pullsAguardando = new Map(); // sessaoId → timestamp
+
+    function solicitarDownloadRemoto(caminho, tipoCaminho) {
+      if (!estadoExplorador.sessaoId) return;
+      // Marca que ESTA sessão vai iniciar uma operação como receptor em breve
+      pullsAguardando.set(estadoExplorador.sessaoId, Date.now());
+      window.dispatchEvent(new CustomEvent("physicalcloud:solicitar-download-remoto", {
+        detail: {
+          sessaoId: estadoExplorador.sessaoId,
+          caminho,
+          tipoCaminho,
+        },
+      }));
+      window.PhysicalCloud?.aviso?.(`Solicitando ${caminho}…`);
     }
 
-    window.addEventListener("physicalcloud:lista-recebida", (event) => {
-      const { itens, caminho, erro, paginaAtual, totalPaginas } = event.detail;
-      const status = document.getElementById("explorador-status");
+    // ─── Modal de recebimento (operação) ───────────────────────────────────
+    let operacaoAtualId = null;
 
-      if (erro) {
-        status.textContent = erro;
-        status.style.color = "#ff6b6b";
-        acumuladorItens = [];
+    function formatarTextoRecebimento(totalArquivos, totalBytes) {
+      const arqTxt = `${totalArquivos} arquivo${totalArquivos === 1 ? "" : "s"}`;
+      return `${arqTxt} (${formatarTamanho(totalBytes)})`;
+    }
+
+    window.addEventListener("physicalcloud:operacao-recebida", (ev) => {
+      const { operacaoId, sessaoId, nomeRemetente, totalArquivos, totalBytes, totalLotes } = ev.detail;
+
+      // Se a operação é resultado de um pull do próprio usuário, aceita direto
+      const pullTimestamp = pullsAguardando.get(sessaoId);
+      if (pullTimestamp && Date.now() - pullTimestamp < 60000) {
+        pullsAguardando.delete(sessaoId);
+        window.PhysicalCloudTransfer.aceitarOperacao(operacaoId).catch((e) => {
+          console.error("Falha ao aceitar operação de pull:", e);
+        });
         return;
       }
 
-      if (paginaAtual === 1) {
-        acumuladorItens = [];
-        caminhoAtualRecebido = caminho;
-        totalPaginasRecebidas = totalPaginas;
-      }
-
-      acumuladorItens = acumuladorItens.concat(itens);
-      paginaAtualRecebida = paginaAtual;
-
-      status.textContent = `Carregando... (Página ${paginaAtual} de ${totalPaginas})`;
-
-      if (paginaAtualRecebida === totalPaginasRecebidas) {
-        renderizarExplorador(acumuladorItens, caminhoAtualRecebido);
-      }
-    });
-
-    document.getElementById("btn-explorador-voltar")?.addEventListener("click", () => {
-      const partes = caminhoAtualExplorador.split("/").filter(Boolean);
-      partes.pop();
-      caminhoAtualExplorador = partes.join("/");
-      window.dispatchEvent(new CustomEvent("physicalcloud:solicitar-exploracao", {
-        detail: { caminho: caminhoAtualExplorador },
-      }));
-      document.getElementById("explorador-status").textContent = "Carregando...";
-      document.getElementById("lista-explorador").innerHTML = "";
-    });
-
-    document.getElementById("btn-explorar-servidor")?.addEventListener("click", () => {
-      const modal = document.getElementById("modal-explorador");
-      const status = document.getElementById("explorador-status");
-      const lista = document.getElementById("lista-explorador");
-      
-      modal.classList.add("active");
-      caminhoAtualExplorador = "";
-      status.textContent = "Solicitando lista ao servidor...";
-      status.style.color = "var(--text-muted)";
-      lista.innerHTML = "";
-      
-      window.dispatchEvent(new CustomEvent("physicalcloud:solicitar-exploracao", {
-        detail: { caminho: "" },
-      }));
-    });
-
-    document.getElementById("btn-fechar-explorador")?.addEventListener("click", () => {
-      document.getElementById("modal-explorador").classList.remove("active");
-    });
-
-    // ─── Botão Enviar arquivo ─────────────────────────────────────────────────
-    document.getElementById("btn-enviar")?.addEventListener("click", () => {
-      const t = /** @type {any} */ (window).PhysicalCloudTransfer;
-      if (!t || t.canais.size === 0) {
-        window.dispatchEvent(new CustomEvent("physicalcloud:transfer-sem-canal"));
+      // Se o usuário marcou "não mostrar novamente", aceita direto
+      if (localStorage.getItem("physicalCloudNaoMostrarRecebimento") === "true") {
+        window.PhysicalCloudTransfer.aceitarOperacao(operacaoId).catch((e) => {
+          console.error("Falha ao aceitar operação:", e);
+        });
         return;
       }
-      window.dispatchEvent(new CustomEvent("physicalcloud:solicitar-envio"));
-    });
 
-    window.addEventListener("physicalcloud:escolher-destino", (event) => {
-      const { arquivos, sessaoIds } = /** @type {CustomEvent} */ (event).detail;
-      const sid = destinoSelect?.value || sessaoIds[0];
-      const t = /** @type {any} */ (window).PhysicalCloudTransfer;
-      if (t) t.enfileirarArquivos(sid, arquivos);
-    });
-
-    window.addEventListener("physicalcloud:transfer-sem-canal", () => {
-      document.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
-      document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
-      document.querySelector(".nav-item[data-tab='dispositivos']")?.classList.add("active");
-      document.getElementById("dispositivos")?.classList.add("active");
-    });
-
-    // ─── UI de progresso ─────────────────────────────────────────────────────
-    const cardsPorTransfer = new Map();
-    const amostrasVelocidade = new Map();
-
-    function formatarBytes(bytes) {
-      if (bytes < 1024) return bytes + " B";
-      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-      return (bytes / (1024 * 1024)).toFixed(1) + " MB";
-    }
-
-    function formatarVelocidade(bytesPerSec) {
-      if (!isFinite(bytesPerSec) || bytesPerSec <= 0) return "—";
-      if (bytesPerSec < 1024) return bytesPerSec.toFixed(0) + " B/s";
-      if (bytesPerSec < 1024 * 1024) return (bytesPerSec / 1024).toFixed(1) + " KB/s";
-      return (bytesPerSec / (1024 * 1024)).toFixed(2) + " MB/s";
-    }
-
-    function formatarEta(segundos) {
-      if (!isFinite(segundos) || segundos <= 0) return "—";
-      if (segundos < 60) return Math.ceil(segundos) + "s";
-      const m = Math.floor(segundos / 60);
-      const s = Math.ceil(segundos % 60);
-      return m + "m " + s + "s";
-    }
-
-    function calcularVelocidade(transferId, enviados) {
-      const agora = Date.now();
-      const amostra = amostrasVelocidade.get(transferId);
-      if (!amostra) {
-        amostrasVelocidade.set(transferId, { ultimoEnviado: enviados, ultimoTimestamp: agora, velocidade: 0 });
-        return 0;
+      operacaoAtualId = operacaoId;
+      $("recebimento-texto").textContent = `"${nomeRemetente}" quer enviar arquivos para este dispositivo.`;
+      $("recebimento-nome").textContent = formatarTextoRecebimento(totalArquivos, totalBytes);
+      $("recebimento-tamanho").textContent = `Total: ${formatarTamanho(totalBytes)}`;
+      const lotesEl = $("recebimento-lotes");
+      if (totalArquivos > 100) {
+        const lotes = totalLotes || Math.ceil(totalArquivos / 100);
+        lotesEl.style.display = "";
+        lotesEl.textContent = `⚠️ Será dividido em ${lotes} lotes de até 100 arquivos. O processamento entre lotes é automático.`;
+      } else {
+        lotesEl.style.display = "none";
       }
-      const dt = agora - amostra.ultimoTimestamp;
-      if (dt < 500) return amostra.velocidade;
-      const dBytes = enviados - amostra.ultimoEnviado;
-      const novaVel = (dBytes / dt) * 1000;
-      amostra.velocidade = novaVel;
-      amostra.ultimoEnviado = enviados;
-      amostra.ultimoTimestamp = agora;
-      return novaVel;
-    }
+      $("nao-mostrar-recebimento").checked = false;
+      $("modal-recebimento").classList.add("active");
+    });
 
-    window.addEventListener("physicalcloud:transfer-inicio", (event) => {
-      const { transferId, sessaoId, nome, tamanho, direcao } = /** @type {CustomEvent} */ (event).detail;
+    $("btn-aceitar-recebimento")?.addEventListener("click", async () => {
+      if ($("nao-mostrar-recebimento").checked) {
+        localStorage.setItem("physicalCloudNaoMostrarRecebimento", "true");
+      }
+      const opId = operacaoAtualId;
+      operacaoAtualId = null;
+      $("modal-recebimento").classList.remove("active");
+      if (!opId) return;
+      try { await window.PhysicalCloudTransfer.aceitarOperacao(opId); }
+      catch (e) { console.error("Falha ao aceitar operação:", e); }
+    });
+
+    $("btn-recusar-recebimento")?.addEventListener("click", () => {
+      const opId = operacaoAtualId;
+      operacaoAtualId = null;
+      $("modal-recebimento").classList.remove("active");
+      if (!opId) return;
+      window.PhysicalCloudTransfer.recusarOperacao(opId);
+    });
+
+    // ─── Cartões de operação em andamento ──────────────────────────────────
+    const operacoesUI = new Map();
+
+    function criarCartaoOperacao(operacaoId, direcao, totalArquivos, sessaoId) {
+      if (operacoesUI.has(operacaoId)) return;
       const card = document.createElement("div");
       card.className = "transfer-card";
-      card.dataset.transferId = transferId;
-      const icone = direcao === "envio" ? "↑" : "↓";
-      const corIcone = direcao === "envio" ? "#39ff8f" : "#4db8ff";
+      card.dataset.operacaoId = operacaoId;
+
       const header = document.createElement("div");
       header.className = "transfer-header";
-      const iconeEl = document.createElement("span");
-      iconeEl.className = "transfer-icone";
-      iconeEl.style.color = corIcone;
-      iconeEl.textContent = icone;
-      const nomeEl = document.createElement("span");
-      nomeEl.className = "transfer-nome";
-      nomeEl.textContent = nome;
-      const tamanhoEl = document.createElement("span");
-      tamanhoEl.className = "transfer-tamanho";
-      tamanhoEl.textContent = formatarBytes(tamanho);
-      const cancelBtn = document.createElement("button");
-      cancelBtn.className = "transfer-cancelar";
-      cancelBtn.title = "Cancelar";
-      cancelBtn.textContent = "✕";
-      cancelBtn.addEventListener("click", () => {
-        const t = /** @type {any} */ (window).PhysicalCloudTransfer;
-        if (t) t.cancelarTransferencia(transferId);
+      const icone = document.createElement("span");
+      icone.className = "transfer-icone";
+      icone.textContent = direcao === "envio" ? "⬆" : "⬇";
+      const nome = document.createElement("span");
+      nome.className = "transfer-nome";
+      nome.textContent = (direcao === "envio" ? "Enviando " : "Recebendo ") +
+        `${totalArquivos} arquivo${totalArquivos === 1 ? "" : "s"}`;
+      const tamanho = document.createElement("span");
+      tamanho.className = "transfer-tamanho";
+      const cancelar = document.createElement("button");
+      cancelar.className = "transfer-cancelar";
+      cancelar.textContent = "×";
+      cancelar.title = "Cancelar operação";
+      cancelar.addEventListener("click", () => {
+        window.PhysicalCloudTransfer.cancelarOperacao(operacaoId);
       });
-      header.appendChild(iconeEl);
-      header.appendChild(nomeEl);
-      header.appendChild(tamanhoEl);
-      header.appendChild(cancelBtn);
+      header.append(icone, nome, tamanho, cancelar);
+
       const barraContainer = document.createElement("div");
       barraContainer.className = "transfer-barra-container";
       const barra = document.createElement("div");
       barra.className = "transfer-barra";
       barra.style.width = "0%";
       barraContainer.appendChild(barra);
-      const statusEl = document.createElement("div");
-      statusEl.className = "transfer-status";
-      statusEl.textContent = "Iniciando…";
-      card.appendChild(header);
-      card.appendChild(barraContainer);
-      card.appendChild(statusEl);
-      cardsPorTransfer.set(transferId, card);
-      if (listaTransfers) listaTransfers.appendChild(card);
-      if (transfersAtivos) transfersAtivos.style.display = "";
-    });
 
-    window.addEventListener("physicalcloud:transfer-progresso", (event) => {
-      const { transferId, enviados, total } = /** @type {CustomEvent} */ (event).detail;
-      const card = cardsPorTransfer.get(transferId);
-      if (!card) return;
-      const pct = total > 0 ? Math.round((enviados / total) * 100) : 0;
-      const barra = /** @type {HTMLElement | null} */ (card.querySelector(".transfer-barra"));
-      const status = card.querySelector(".transfer-status");
-      if (barra) barra.style.width = pct + "%";
-      const vel = calcularVelocidade(transferId, enviados);
-      const restante = Math.max(0, total - enviados);
-      const eta = vel > 0 ? restante / vel : Infinity;
-      if (status) {
-        status.textContent = `${pct}% — ${formatarBytes(enviados)} / ${formatarBytes(total)} — ${formatarVelocidade(vel)} — ETA ${formatarEta(eta)}`;
+      const status = document.createElement("div");
+      status.className = "transfer-status";
+      status.textContent = "Preparando…";
+
+      card.append(header, barraContainer, status);
+      $("lista-transfers").appendChild(card);
+      $("transfers-ativos").style.display = "";
+
+      operacoesUI.set(operacaoId, {
+        card, barra, status, tamanho, nome, cancelar,
+        sessaoId, direcao, totalArquivos,
+        arquivosDone: 0, arquivosErro: 0,
+        bytesDone: 0, bytesTotal: 0,
+        totalLotes: Math.ceil(totalArquivos / 100) || 1,
+        loteAtual: 1,
+        amostras: /** @type {Array<{ t: number, bytes: number }>} */ ([]),
+        bytesAcumulados: 0, ultimoArquivoBytes: 0,
+        iniciadoEm: Date.now(),
+        finalizado: false,
+      });
+    }
+
+    function atualizarBarra(ui) {
+      const processados = ui.arquivosDone + ui.arquivosErro;
+      const pct = ui.totalArquivos > 0 ? Math.min(100, (processados / ui.totalArquivos) * 100) : 0;
+      ui.barra.style.width = pct + "%";
+    }
+
+    function atualizarTextoStatus(ui) {
+      if (ui.finalizado) return;
+      const processados = ui.arquivosDone + ui.arquivosErro;
+      const arqTxt = `${processados} / ${ui.totalArquivos} arquivos`;
+      const loteTxt = ui.totalLotes > 1 ? ` · lote ${ui.loteAtual} / ${ui.totalLotes}` : "";
+
+      // Velocidade: amostras espaçadas (mín 500ms para estabilidade)
+      const agora = Date.now();
+      const ultima = ui.amostras[ui.amostras.length - 1];
+      if (!ultima || agora - ultima.t >= 500) {
+        ui.amostras.push({ t: agora, bytes: ui.bytesAcumulados });
+      } else {
+        ultima.bytes = ui.bytesAcumulados;
+        ultima.t = agora;
       }
-    });
+      while (ui.amostras.length > 8) ui.amostras.shift();
 
-    window.addEventListener("physicalcloud:transfer-concluido", (event) => {
-      const { transferId, nome, tamanho, direcao } = /** @type {CustomEvent} */ (event).detail;
-      const card = cardsPorTransfer.get(transferId);
-      if (card) {
-        const barra = /** @type {HTMLElement | null} */ (card.querySelector(".transfer-barra"));
-        if (barra) {
-          barra.style.width = "100%";
-          barra.style.background = "#39ff8f";
-        }
-        const status = card.querySelector(".transfer-status");
-        if (status) status.textContent = direcao === "envio" ? "Enviado com sucesso ✓" : "Recebido com sucesso ✓";
-        const cancelBtn = card.querySelector(".transfer-cancelar");
-        if (cancelBtn) /** @type {HTMLElement} */ (cancelBtn).style.display = "none";
-        setTimeout(() => {
-          card.remove();
-          cardsPorTransfer.delete(transferId);
-          amostrasVelocidade.delete(transferId);
-          if (listaTransfers && listaTransfers.children.length === 0 && transfersAtivos) {
-            transfersAtivos.style.display = "none";
+      let velocidadeTxt = "";
+      if (ui.amostras.length >= 2) {
+        const primeira = ui.amostras[0];
+        const ult = ui.amostras[ui.amostras.length - 1];
+        const dt = (ult.t - primeira.t) / 1000;
+        const db = ult.bytes - primeira.bytes;
+        if (dt >= 0.4 && db >= 0) {
+          const bps = db / dt;
+          if (bps > 0) {
+            velocidadeTxt = ` · ${formatarTamanho(bps)}/s`;
+            const restante = Math.max(0, ui.bytesTotal - ui.bytesAcumulados);
+            if (restante > 0) velocidadeTxt += ` · ETA ${formatarEta(restante / bps)}`;
           }
-        }, 4000);
+        }
       }
 
+      ui.status.textContent = `${arqTxt}${loteTxt}${velocidadeTxt}`;
+      if (ui.bytesTotal > 0) {
+        ui.tamanho.textContent = `${formatarTamanho(ui.bytesAcumulados)} / ${formatarTamanho(ui.bytesTotal)}`;
+      }
+    }
+
+    function verificarConclusaoOperacao(operacaoId) {
+      const ui = operacoesUI.get(operacaoId);
+      if (!ui || ui.finalizado) return;
+      if (ui.arquivosDone + ui.arquivosErro >= ui.totalArquivos) {
+        finalizarCartaoOperacao(operacaoId, {
+          arquivosConcluidos: ui.arquivosDone,
+          arquivosComErro: ui.arquivosErro,
+          totalArquivos: ui.totalArquivos,
+        });
+      }
+    }
+
+    function finalizarCartaoOperacao(operacaoId, resultado) {
+      const ui = operacoesUI.get(operacaoId);
+      if (!ui || ui.finalizado) return;
+      ui.finalizado = true;
+      ui.arquivosDone = resultado.arquivosConcluidos ?? ui.arquivosDone;
+      ui.arquivosErro = resultado.arquivosComErro ?? ui.arquivosErro;
+      ui.barra.style.width = "100%";
+
+      const cancelada = !!resultado.cancelada;
+      const recusada = !!resultado.recusada;
+      const comErro = (resultado.arquivosComErro || 0) > 0;
+
+      if (cancelada) {
+        ui.status.textContent = "Cancelada.";
+        ui.status.style.color = "#ff6b6b";
+      } else if (recusada) {
+        ui.status.textContent = "Recusada pelo destinatário.";
+        ui.status.style.color = "#ff6b6b";
+      } else if (comErro) {
+        ui.status.textContent = `Concluído com ${resultado.arquivosComErro} erro(s) de ${resultado.totalArquivos || ui.totalArquivos}.`;
+        ui.status.style.color = "#ff6b6b";
+      } else {
+        ui.status.textContent = `Concluído: ${resultado.arquivosConcluidos ?? ui.totalArquivos} arquivo(s).`;
+        ui.status.style.color = "var(--accent)";
+      }
+      if (ui.cancelar) ui.cancelar.style.display = "none";
+
+      setTimeout(() => {
+        if (ui.card && ui.card.parentNode) ui.card.parentNode.removeChild(ui.card);
+        operacoesUI.delete(operacaoId);
+        if ($("lista-transfers").children.length === 0) $("transfers-ativos").style.display = "none";
+      }, 4000);
+    }
+
+    // Evento: operação iniciada (criado pelo transfer.js, tanto envio quanto recebimento aceito)
+    window.addEventListener("physicalcloud:operacao-iniciada", (ev) => {
+      const { operacaoId, sessaoId, direcao, totalArquivos, totalBytes } = ev.detail;
+      criarCartaoOperacao(operacaoId, direcao, totalArquivos, sessaoId);
+      const ui = operacoesUI.get(operacaoId);
+      if (ui) {
+        ui.bytesTotal = totalBytes || 0;
+        atualizarBarra(ui);
+        atualizarTextoStatus(ui);
+      }
+    });
+
+    // Fallback: se por algum motivo não houve operacao-iniciada (compatibilidade)
+    window.addEventListener("physicalcloud:transfer-inicio", (ev) => {
+      const { operacaoId, sessaoId, direcao, tamanho, nome } = ev.detail;
+      if (!operacaoId) return;
+      if (!operacoesUI.has(operacaoId)) criarCartaoOperacao(operacaoId, direcao, 1, sessaoId);
+      const ui = operacoesUI.get(operacaoId);
+      if (!ui) return;
+      if (tamanho) ui.bytesTotal = Math.max(ui.bytesTotal, ui.bytesAcumulados + tamanho);
+      if (nome) ui.nome.textContent = nome;
+      atualizarTextoStatus(ui);
+    });
+
+    window.addEventListener("physicalcloud:transfer-progresso", (ev) => {
+      const { operacaoId, enviados, total } = ev.detail;
+      if (!operacaoId) return;
+      const ui = operacoesUI.get(operacaoId);
+      if (!ui || ui.finalizado) return;
+      const delta = enviados - ui.ultimoArquivoBytes;
+      if (delta > 0) ui.bytesAcumulados += delta;
+      ui.ultimoArquivoBytes = enviados;
+      if (total > 0) ui.bytesTotal = Math.max(ui.bytesTotal, ui.bytesAcumulados + Math.max(0, total - enviados));
+      atualizarTextoStatus(ui);
+    });
+
+    window.addEventListener("physicalcloud:operacao-progresso", (ev) => {
+      const { operacaoId, arquivosConcluidos, arquivosComErro, totalArquivos, loteAtual, totalLotes } = ev.detail;
+      const ui = operacoesUI.get(operacaoId);
+      if (!ui || ui.finalizado) return;
+      ui.arquivosDone = arquivosConcluidos;
+      ui.arquivosErro = arquivosComErro;
+      ui.totalArquivos = totalArquivos;
+      ui.loteAtual = loteAtual;
+      ui.totalLotes = totalLotes;
+      ui.ultimoArquivoBytes = 0;
+      atualizarBarra(ui);
+      atualizarTextoStatus(ui);
+    });
+
+    // Evento por arquivo — importante no receptor (que não tem operacao-progresso)
+    window.addEventListener("physicalcloud:transfer-concluido", (ev) => {
+      const { operacaoId, tamanho, direcao, nome, caminhoRelativo } = ev.detail;
+
+      // Histórico de recebidos (para todo recebimento concluído)
       if (direcao === "recebimento") {
         const item = document.createElement("div");
         item.className = "recebido-item";
-        const iconeRecebido = document.createElement("span");
-        iconeRecebido.className = "recebido-icone";
-        iconeRecebido.textContent = "⬇";
-        const infoDiv = document.createElement("div");
-        infoDiv.className = "recebido-info";
-        const nomeRecebido = document.createElement("span");
-        nomeRecebido.className = "recebido-nome";
-        nomeRecebido.textContent = nome;
-        const detalheRecebido = document.createElement("span");
-        detalheRecebido.className = "recebido-detalhe";
-        detalheRecebido.textContent = formatarBytes(tamanho) + " · salvo";
-        infoDiv.appendChild(nomeRecebido);
-        infoDiv.appendChild(detalheRecebido);
-        item.appendChild(iconeRecebido);
-        item.appendChild(infoDiv);
-        if (listaRecebidos) listaRecebidos.prepend(item);
-        if (recebidosContainer) recebidosContainer.style.display = "";
+        const icone = document.createElement("span");
+        icone.className = "recebido-icone";
+        icone.textContent = "✔";
+        const info = document.createElement("div");
+        info.className = "recebido-info";
+        const nomeEl = document.createElement("span");
+        nomeEl.className = "recebido-nome";
+        nomeEl.textContent = caminhoRelativo || nome || "arquivo";
+        const det = document.createElement("span");
+        det.className = "recebido-detalhe";
+        det.textContent = formatarTamanho(tamanho || 0);
+        info.append(nomeEl, det);
+        item.append(icone, info);
+        $("lista-recebidos").appendChild(item);
+        $("recebidos-container").style.display = "";
+      }
+
+      if (!operacaoId) return;
+      const ui = operacoesUI.get(operacaoId);
+      if (!ui || ui.finalizado) return;
+
+      // Só contabilizamos no lado do receptor (o emissor já conta via operacao-progresso)
+      if (direcao === "recebimento") {
+        if (ui.arquivosDone + ui.arquivosErro < ui.totalArquivos) {
+          ui.arquivosDone++;
+        }
+        if (Number.isFinite(tamanho)) ui.bytesAcumulados += tamanho;
+        atualizarBarra(ui);
+        atualizarTextoStatus(ui);
+        verificarConclusaoOperacao(operacaoId);
       }
     });
 
-    window.addEventListener("physicalcloud:transfer-cancelado", (event) => {
-      const { transferId } = /** @type {CustomEvent} */ (event).detail;
-      const card = cardsPorTransfer.get(transferId);
-      if (card) {
-        const status = card.querySelector(".transfer-status");
-        if (status) status.textContent = "Cancelado.";
-        setTimeout(() => {
-          card.remove();
-          cardsPorTransfer.delete(transferId);
-          amostrasVelocidade.delete(transferId);
-          if (listaTransfers && listaTransfers.children.length === 0 && transfersAtivos) {
-            transfersAtivos.style.display = "none";
-          }
-        }, 2000);
+    // Operação concluída (emitido pelo emissor)
+    window.addEventListener("physicalcloud:operacao-concluida", (ev) => {
+      finalizarCartaoOperacao(ev.detail.operacaoId, ev.detail);
+    });
+    window.addEventListener("physicalcloud:operacao-concluida-com-erros", (ev) => {
+      finalizarCartaoOperacao(ev.detail.operacaoId, ev.detail);
+    });
+    window.addEventListener("physicalcloud:operacao-recusada", (ev) => {
+      finalizarCartaoOperacao(ev.detail.operacaoId, { recusada: true });
+    });
+    window.addEventListener("physicalcloud:operacao-cancelada", (ev) => {
+      finalizarCartaoOperacao(ev.detail.operacaoId, { cancelada: true });
+    });
+
+    // Erro em arquivo: conta como erro na operação correspondente
+    window.addEventListener("physicalcloud:transfer-erro", (ev) => {
+      const { operacaoId, motivo, nome } = ev.detail || {};
+      if (operacaoId) {
+        const ui = operacoesUI.get(operacaoId);
+        if (ui && !ui.finalizado) {
+          ui.arquivosErro++;
+          atualizarBarra(ui);
+          atualizarTextoStatus(ui);
+          verificarConclusaoOperacao(operacaoId);
+        }
+      }
+      const msg = motivo || "Erro na transferência.";
+      window.PhysicalCloud?.aviso?.((nome ? `[${nome}] ` : "") + msg);
+    });
+
+    // Limpeza de cartões se a sessão cair
+    window.addEventListener("physicalcloud:sessao-encerrada", (ev) => {
+      const sessaoId = ev.detail.sessaoId;
+      const t = window.PhysicalCloudTransfer;
+      for (const [opId, ui] of Array.from(operacoesUI.entries())) {
+        if (ui.sessaoId !== sessaoId) continue;
+        const aindaAtiva = (t?.operacoes?.has(opId)) || (t?.ofertasOperacoes?.has(opId));
+        if (!aindaAtiva) finalizarCartaoOperacao(opId, { cancelada: true });
       }
     });
 
-    window.addEventListener("physicalcloud:transfer-erro", (event) => {
-      const { transferId, motivo } = /** @type {CustomEvent} */ (event).detail;
-      const card = cardsPorTransfer.get(transferId);
-      if (card) {
-        const barra = /** @type {HTMLElement | null} */ (card.querySelector(".transfer-barra"));
-        if (barra) barra.style.background = "#ff4444";
-        const status = card.querySelector(".transfer-status");
-        if (status) status.textContent = "Erro: " + motivo;
-        setTimeout(() => {
-          card.remove();
-          cardsPorTransfer.delete(transferId);
-          amostrasVelocidade.delete(transferId);
-        }, 5000);
-      }
-    });
-
-    // ─── Bloco C.1: Confirmação de Recebimento ──────────────────────────────
-    let ofertaAtual = null;
-    const modalRecebimento = document.getElementById("modal-recebimento");
-    const textoRecebimento = document.getElementById("recebimento-texto");
-    const nomeRecebimento = document.getElementById("recebimento-nome");
-    const tamanhoRecebimento = document.getElementById("recebimento-tamanho");
-
-    window.addEventListener("physicalcloud:recebimento-pendente", (event) => {
-      const { transferId, nome, tamanho, nomeRemetente } = event.detail;
-      ofertaAtual = transferId;
-      textoRecebimento.textContent = `"${nomeRemetente}" quer enviar o arquivo:`;
-      nomeRecebimento.textContent = nome;
-      if (tamanho < 1024 * 1024) tamanhoRecebimento.textContent = (tamanho / 1024).toFixed(1) + " KB";
-      else tamanhoRecebimento.textContent = (tamanho / (1024 * 1024)).toFixed(1) + " MB";
-      modalRecebimento.classList.add("active");
-    });
-
-    document.getElementById("btn-aceitar-recebimento")?.addEventListener("click", () => {
-      modalRecebimento.classList.remove("active");
-      const t = /** @type {any} */ (window).PhysicalCloudTransfer;
-      if (t && ofertaAtual) t.aceitarRecebimento(ofertaAtual);
-      ofertaAtual = null;
-    });
-
-    document.getElementById("btn-recusar-recebimento")?.addEventListener("click", () => {
-      modalRecebimento.classList.remove("active");
-      const t = /** @type {any} */ (window).PhysicalCloudTransfer;
-      if (t && ofertaAtual) t.recusarRecebimento(ofertaAtual);
-      ofertaAtual = null;
-    });
+    // ─── Inicialização ─────────────────────────────────────────────────────
+    atualizarEstadoNuvem();
+    atualizarBotoesExplorador();
   </script>
 </body>
 </html>
