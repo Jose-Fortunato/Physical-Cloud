@@ -1,4 +1,8 @@
 // @ts-check
+// ═══════════════════════════════════════════════════════════════════════════
+// PhysicalCloud-transfer.js — FASE 1 (correções críticas)
+// #1 #4 #10 #11 #15 + fallback Android para blob
+// ═══════════════════════════════════════════════════════════════════════════
 
 const TAMANHO_CHUNK = 256 * 1024;
 const BUFFER_ALTO = 4 * 1024 * 1024;
@@ -40,7 +44,40 @@ const aguardandoAceitacaoMap = new Map();
 const aguardandoOperacaoMap = new Map();
 const timeoutsOk = new Map();
 
-// ─── Utilidades ─────────────────────────────────────────────────────────────
+// ═══ FASE 1 / Bug #10 ═══
+/** @type {Map<string, Set<string>>} */
+const pullsAguardando = new Map();
+
+/** @param {string} sessaoId @param {string} operacaoId */
+function marcarPullAguardando(sessaoId, operacaoId) {
+    let set = pullsAguardando.get(sessaoId);
+    if (!set) { set = new Set(); pullsAguardando.set(sessaoId, set); }
+    set.add(operacaoId);
+    // timeout de segurança: limpa após 120s mesmo sem receber operation-start
+    setTimeout(() => {
+        const s = pullsAguardando.get(sessaoId);
+        if (s) {
+            s.delete(operacaoId);
+            if (s.size === 0) pullsAguardando.delete(sessaoId);
+        }
+    }, TIMEOUT_OPERACAO_MS);
+}
+
+/** @param {string} sessaoId @param {string} operacaoId */
+function consumirPullAguardando(sessaoId, operacaoId) {
+    const set = pullsAguardando.get(sessaoId);
+    if (!set) return false;
+    const tinha = set.delete(operacaoId);
+    if (set.size === 0) pullsAguardando.delete(sessaoId);
+    return tinha;
+}
+
+/** @param {string} sessaoId */
+function limparPullsAguardando(sessaoId) {
+    pullsAguardando.delete(sessaoId);
+}
+
+// ─── Utilidades ───
 
 function gerarTransferId() {
     if (crypto.randomUUID) return crypto.randomUUID();
@@ -81,7 +118,12 @@ function sessaoTemOperacaoAtiva(sessaoId) {
     return false;
 }
 
-// ─── Aguardando aceites ────────────────────────────────────────────────────
+// FASE 1: helpers de detecção de ambiente
+function temDirectoryPicker() {
+    return typeof (/** @type {any} */ (window)).showDirectoryPicker === "function";
+}
+
+// ─── Aguardando aceites ───
 
 /** @param {string} transferId @param {RTCDataChannel} dc */
 function aguardarAceitacao(transferId, dc) {
@@ -145,7 +187,7 @@ function resolverDecisaoOperacao(operacaoId, decisao) {
     if (p) { aguardandoOperacaoMap.delete(operacaoId); p.resolve(decisao); }
 }
 
-// ─── Timeout de file-ok ────────────────────────────────────────────────────
+// ─── Timeout de file-ok ───
 
 /** @param {string} transferId @param {string} sessaoId */
 function armarTimeoutOk(transferId, sessaoId) {
@@ -170,7 +212,7 @@ function cancelarTimeoutOk(transferId) {
     if (t) { clearTimeout(t); timeoutsOk.delete(transferId); }
 }
 
-// ─── Explorador remoto ─────────────────────────────────────────────────────
+// ─── Explorador remoto ───
 
 /** @param {FileSystemDirectoryHandle} dirHandle @param {string} [caminhoAtual] */
 async function listarDiretorio(dirHandle, caminhoAtual = "") {
@@ -277,13 +319,17 @@ async function coletarArquivosRecursivo(dirHandle, prefixo = "") {
     return resultado;
 }
 
-// ─── Envio por operação ────────────────────────────────────────────────────
+// ═══ FIM DA PARTE 1/3 ═══
+// ═══ INÍCIO DA PARTE 2/3 ═══
+
+// ─── Envio por operação ───
 
 /**
  * @param {string} sessaoId
  * @param {Array<{ file: File, caminhoRelativo?: string }>} entradas
+ * @param {string | null} [operacaoIdForcado]  — usado pelo pull para forçar o ID
  */
-async function iniciarOperacaoEnvio(sessaoId, entradas) {
+async function iniciarOperacaoEnvio(sessaoId, entradas, operacaoIdForcado = null) {
     const dc = canais.get(sessaoId);
     if (!dc || dc.readyState !== "open") {
         emitir("physicalcloud:transfer-erro", { sessaoId, motivo: "Canal não está aberto." });
@@ -291,7 +337,6 @@ async function iniciarOperacaoEnvio(sessaoId, entradas) {
     }
     if (entradas.length === 0) return null;
 
-    // Serialização por sessão: só uma operação de envio por vez.
     if (sessaoTemOperacaoAtiva(sessaoId)) {
         emitir("physicalcloud:transfer-erro", {
             sessaoId,
@@ -300,7 +345,7 @@ async function iniciarOperacaoEnvio(sessaoId, entradas) {
         return null;
     }
 
-    const operacaoId = gerarTransferId();
+    const operacaoId = operacaoIdForcado || gerarTransferId();
     const arquivos = entradas.map(e => ({
         file: e.file,
         caminhoRelativo: e.caminhoRelativo || /** @type {any} */ (e.file).webkitRelativePath || e.file.name,
@@ -364,9 +409,14 @@ function enfileirarArquivos(sessaoId, arquivos) {
     iniciarOperacaoEnvio(sessaoId, entradas).catch(e => console.error("Erro ao iniciar operação:", e));
 }
 
-/** @param {string} sessaoId @param {Array<{ file: File, caminhoRelativo: string }>} entradas */
-function enfileirarArquivosComCaminho(sessaoId, entradas) {
-    iniciarOperacaoEnvio(sessaoId, entradas).catch(e => console.error("Erro ao iniciar operação (pull):", e));
+/**
+ * @param {string} sessaoId
+ * @param {Array<{ file: File, caminhoRelativo: string }>} entradas
+ * @param {string | null} [operacaoIdForcado]
+ */
+function enfileirarArquivosComCaminho(sessaoId, entradas, operacaoIdForcado = null) {
+    iniciarOperacaoEnvio(sessaoId, entradas, operacaoIdForcado)
+        .catch(e => console.error("Erro ao iniciar operação (pull):", e));
 }
 
 /** @param {string} sessaoId */
@@ -535,7 +585,7 @@ async function enviarArquivo(sessaoId, item) {
     }
 }
 
-// ─── Recebimento ───────────────────────────────────────────────────────────
+// ─── Recebimento ───
 
 /** @param {string} sessaoId @param {any} msg @param {RTCDataChannel} dc */
 function tratarOperationStart(sessaoId, msg, dc) {
@@ -558,6 +608,15 @@ function tratarOperationStart(sessaoId, msg, dc) {
         dc,
     };
     ofertasOperacoes.set(operacaoId, op);
+
+    // FASE 1 / Bug #10: auto-aceite de pull (por operacaoId esperado)
+    if (consumirPullAguardando(sessaoId, operacaoId)) {
+        (/** @type {any} */ (window).PhysicalCloudTransfer).aceitarOperacaoAutomatica(operacaoId).catch((/** @type {any} */ e) => {
+            console.error("Falha ao auto-aceitar pull:", e);
+        });
+        return;
+    }
+
     emitir("physicalcloud:operacao-recebida", {
         operacaoId, sessaoId, nomeRemetente: op.nomeRemetente,
         totalArquivos, totalBytes,
@@ -598,6 +657,10 @@ function tratarFileOffer(sessaoId, msg, dc) {
     });
 }
 
+// ═══ FIM DA PARTE 2/3 ═══
+
+// ═══ INÍCIO DA PARTE 3/3 ═══
+
 /**
  * @param {{ transferId: string, operacaoId: string, sessaoId: string, nome: string, caminhoRelativo: string, tamanho: number, tipo: string, dc: RTCDataChannel }} oferta
  */
@@ -618,7 +681,6 @@ async function aceitarArquivoInterno(oferta) {
         modo: "blob",
     };
 
-    // Prepara destino conforme modo escolhido
     if (op.modoSalvamento === "diretorio" && op.destinoHandle) {
         try {
             const partes = oferta.caminhoRelativo.split("/").filter(Boolean);
@@ -636,7 +698,7 @@ async function aceitarArquivoInterno(oferta) {
             console.error("Falha ao preparar arquivo de destino, caindo para blob:", e);
             rec.writerHandle = null; rec.fileHandle = null; rec.modo = "blob";
         }
-    } 
+    }
 
     const anterior = recebimentos.get(oferta.sessaoId);
     if (anterior && anterior.transferId !== oferta.transferId && anterior.writerHandle) {
@@ -757,7 +819,7 @@ async function tratarFileDone(sessaoId, msg, dc) {
     });
 }
 
-// ─── Roteador de mensagens ─────────────────────────────────────────────────
+// ─── Roteador de mensagens ───
 
 /** @param {string} sessaoId @param {any} msg @param {RTCDataChannel} dc */
 async function tratarMensagemJson(sessaoId, msg, dc) {
@@ -812,8 +874,8 @@ async function tratarMensagemJson(sessaoId, msg, dc) {
         case "file-accept": {
             const prom = aguardandoAceitacaoMap.get(msg.transferId);
             if (prom) { aguardandoAceitacaoMap.delete(msg.transferId); prom.resolve(undefined); }
-            break;
-        }
+            break
+                    }
 
         case "file-done":
             await tratarFileDone(sessaoId, msg, dc);
@@ -938,37 +1000,41 @@ async function tratarMensagemJson(sessaoId, msg, dc) {
         case "file-pull-request": {
             const caminho = typeof msg.caminho === "string" ? msg.caminho : "";
             const tipoCaminho = msg.tipoCaminho === "directory" ? "directory" : "file";
+            // FASE 1 / Bug #10: usa o transferId do pedido como operacaoId forçado.
+            // O receptor já registrou esse ID em pullsAguardando — assim o auto-aceite
+            // só dispara para o pull específico, nunca para uma operação alheia.
+            const operacaoIdForcado = typeof msg.transferId === "string" ? msg.transferId : null;
             try {
                 if (tipoCaminho === "file") {
                     const arquivo = await obterArquivoPorCaminho(sessaoId, caminho);
                     if (!arquivo) {
-                        try { dc.send(JSON.stringify({ type: "file-error", transferId: msg.transferId || "pull", motivo: "Arquivo não encontrado." })); } catch {}
+                        try { dc.send(JSON.stringify({ type: "file-error", transferId: operacaoIdForcado || "pull", motivo: "Arquivo não encontrado." })); } catch {}
                         return;
                     }
-                    enfileirarArquivosComCaminho(sessaoId, [{ file: arquivo, caminhoRelativo: caminho }]);
+                    enfileirarArquivosComCaminho(sessaoId, [{ file: arquivo, caminhoRelativo: caminho }], operacaoIdForcado);
                 } else {
                     const dir = await obterDiretorioPorCaminho(sessaoId, caminho);
                     if (!dir) {
-                        try { dc.send(JSON.stringify({ type: "file-error", transferId: msg.transferId || "pull", motivo: "Pasta não encontrada." })); } catch {}
+                        try { dc.send(JSON.stringify({ type: "file-error", transferId: operacaoIdForcado || "pull", motivo: "Pasta não encontrada." })); } catch {}
                         return;
                     }
                     const lista = await coletarArquivosRecursivo(dir, caminho);
                     if (lista.length === 0) {
-                        try { dc.send(JSON.stringify({ type: "file-error", transferId: msg.transferId || "pull", motivo: "Pasta vazia." })); } catch {}
+                        try { dc.send(JSON.stringify({ type: "file-error", transferId: operacaoIdForcado || "pull", motivo: "Pasta vazia." })); } catch {}
                         return;
                     }
-                    enfileirarArquivosComCaminho(sessaoId, lista);
+                    enfileirarArquivosComCaminho(sessaoId, lista, operacaoIdForcado);
                 }
             } catch (e) {
                 console.error("Erro em file-pull-request:", e);
-                try { dc.send(JSON.stringify({ type: "file-error", transferId: msg.transferId || "pull", motivo: "Falha ao ler no dispositivo remetente." })); } catch {}
+                try { dc.send(JSON.stringify({ type: "file-error", transferId: operacaoIdForcado || "pull", motivo: "Falha ao ler no dispositivo remetente." })); } catch {}
             }
             break;
         }
     }
 }
 
-// ─── Ciclo de vida do canal ────────────────────────────────────────────────
+// ─── Ciclo de vida do canal ───
 
 window.addEventListener("physicalcloud:canal-aberto", (event) => {
     const { sessaoId, dc } = /** @type {CustomEvent} */ (event).detail;
@@ -1017,14 +1083,31 @@ window.addEventListener("physicalcloud:canal-aberto", (event) => {
 
 window.addEventListener("physicalcloud:sessao-encerrada", (event) => {
     const { sessaoId } = /** @type {CustomEvent} */ (event).detail;
-    canais.delete(sessaoId); filas.delete(sessaoId); pastasCompartilhadas.delete(sessaoId);
+    canais.delete(sessaoId);
+    filas.delete(sessaoId);
+    pastasCompartilhadas.delete(sessaoId);
+    limparPullsAguardando(sessaoId);
 
     const ctrl = controladoresFila.get(sessaoId);
     if (ctrl) { ctrl.cancelado = true; ctrl.fila.length = 0; controladoresFila.delete(sessaoId); }
 
-    for (const [tid, oferta] of ofertasPendentes) if (oferta.sessaoId === sessaoId) ofertasPendentes.delete(tid);
-    for (const [opId, op] of ofertasOperacoes) if (op.sessaoId === sessaoId) ofertasOperacoes.delete(opId);
-    for (const [opId, op] of operacoes) if (op.sessaoId === sessaoId) operacoes.delete(opId);
+    for (const [tid, oferta] of Array.from(ofertasPendentes.entries())) {
+        if (oferta.sessaoId === sessaoId) ofertasPendentes.delete(tid);
+    }
+
+    // FASE 1 / Bug #15: limpa operações órfãs emitindo operacao-cancelada
+    for (const [opId, op] of Array.from(operacoes.entries())) {
+        if (op.sessaoId === sessaoId) {
+            operacoes.delete(opId);
+            emitir("physicalcloud:operacao-cancelada", { operacaoId: opId, sessaoId, direcao: "envio" });
+        }
+    }
+    for (const [opId, op] of Array.from(ofertasOperacoes.entries())) {
+        if (op.sessaoId === sessaoId) {
+            ofertasOperacoes.delete(opId);
+            emitir("physicalcloud:operacao-cancelada", { operacaoId: opId, sessaoId, direcao: "recebimento" });
+        }
+    }
 
     const tidEnvio = ativasEnvio.get(sessaoId);
     if (tidEnvio) {
@@ -1036,7 +1119,8 @@ window.addEventListener("physicalcloud:sessao-encerrada", (event) => {
         }
         rejeitarAceitacaoPendente(tidEnvio, "Sessão encerrada.", "channel-closed");
         cancelarTimeoutOk(tidEnvio);
-        transferencias.delete(tidEnvio); ativasEnvio.delete(sessaoId);
+        transferencias.delete(tidEnvio);
+        ativasEnvio.delete(sessaoId);
     }
 
     const tidRec = ativasRecebimento.get(sessaoId);
@@ -1049,7 +1133,7 @@ window.addEventListener("physicalcloud:sessao-encerrada", (event) => {
     }
 });
 
-// ─── Input file global ─────────────────────────────────────────────────────
+// ─── Input file global (compatibilidade com evento legado) ───
 
 window.addEventListener("physicalcloud:solicitar-envio", () => {
     if (canais.size === 0) { window.dispatchEvent(new CustomEvent("physicalcloud:transfer-sem-canal")); return; }
@@ -1069,7 +1153,7 @@ window.addEventListener("physicalcloud:solicitar-envio", () => {
     input.click();
 });
 
-// ─── Exploração / pull remoto ──────────────────────────────────────────────
+// ─── Compartilhamento de pasta remoto ───
 
 /** @param {string} sessaoId */
 function solicitarCompartilhamentoRemoto(sessaoId) {
@@ -1096,25 +1180,32 @@ window.addEventListener("physicalcloud:solicitar-exploracao", (event) => {
     } catch {}
 });
 
+// FASE 1 / Bug #10: o requestor envia o operacaoId esperado no transferId.
+// O emissor (file-pull-request) usa esse mesmo ID como operacaoId forçado.
+// Assim o auto-aceite é exato — nunca pega operação alheia.
 window.addEventListener("physicalcloud:solicitar-download-remoto", (event) => {
     const { sessaoId, caminho, tipoCaminho } = /** @type {CustomEvent} */ (event).detail || {};
     if (!sessaoId || !caminho) return;
     const dc = canais.get(sessaoId);
     if (!dc || dc.readyState !== "open") return;
+    const operacaoId = gerarTransferId();
+    marcarPullAguardando(sessaoId, operacaoId);
     try {
         dc.send(JSON.stringify({
             type: "file-pull-request", caminho,
             tipoCaminho: tipoCaminho || "file",
-            transferId: gerarTransferId(),
+            transferId: operacaoId,
         }));
-    } catch {}
+    } catch {
+        const set = pullsAguardando.get(sessaoId);
+        if (set) { set.delete(operacaoId); if (set.size === 0) pullsAguardando.delete(sessaoId); }
+    }
 });
 
-// Quando o OUTRO dispositivo pede uma pasta, abre o picker NO PRÓPRIO dispositivo.
 window.addEventListener("physicalcloud:share-folder-solicitado", async (event) => {
     const { sessaoId } = /** @type {CustomEvent} */ (event).detail;
     if (!canais.has(sessaoId)) return;
-    if (!("showDirectoryPicker" in window)) {
+    if (!temDirectoryPicker()) {
         notificarPastaCompartilhada(sessaoId, false, "Este dispositivo não suporta compartilhar pasta.");
         /** @type {any} */ (window).PhysicalCloud?.aviso?.("Este dispositivo não suporta compartilhar pasta.");
         return;
@@ -1131,41 +1222,105 @@ window.addEventListener("physicalcloud:share-folder-solicitado", async (event) =
     }
 });
 
-// ─── API pública ───────────────────────────────────────────────────────────
+// ─── API pública ───
 
 (/** @type {any} */ (window)).PhysicalCloudTransfer = {
     enfileirarArquivos, canais, transferencias, operacoes, ofertasOperacoes,
     solicitarCompartilhamentoRemoto,
 
-    /** @param {string} operacaoId */
+    /**
+     * FASE 1 / Bug #1:
+     *  - AbortError → recusa legítima (usuário cancelou o picker)
+     *  - Qualquer outro erro (SecurityError/NotAllowedError/API ausente) → cai para
+     *    modo blob e prossegue com a transferência. NUNCA marca como recusada.
+     * @param {string} operacaoId
+     */
     async aceitarOperacao(operacaoId) {
         const op = ofertasOperacoes.get(operacaoId);
         if (!op || op.autorizada || op.recusada) return;
+        if (!op.dc || op.dc.readyState !== "open") {
+            ofertasOperacoes.delete(operacaoId);
+            return;
+        }
 
-        if ("showDirectoryPicker" in window) {
+        let usouBlob = false;
+
+        if (temDirectoryPicker()) {
             try {
                 op.destinoHandle = await /** @type {any} */ (window).showDirectoryPicker({ mode: "readwrite" });
                 op.modoSalvamento = "diretorio";
-            } catch {
-                op.recusada = true;
-                try { op.dc.send(JSON.stringify({ type: "operation-refused", operacaoId })); } catch {}
-                resolverDecisaoOperacao(operacaoId, "refused");
-                ofertasOperacoes.delete(operacaoId);
-                for (const [tid, o] of ofertasPendentes) if (o.operacaoId === operacaoId) ofertasPendentes.delete(tid);
-                return;
+            } catch (/** @type {any} */ e) {
+                const tipoErro = (e && e.name) || "";
+                if (tipoErro === "AbortError") {
+                    // Recusa legítima: usuário fechou o picker de propósito.
+                    op.recusada = true;
+                    try { op.dc.send(JSON.stringify({ type: "operation-refused", operacaoId })); } catch {}
+                    resolverDecisaoOperacao(operacaoId, "refused");
+                    ofertasOperacoes.delete(operacaoId);
+                    for (const [tid, o] of ofertasPendentes) {
+                        if (o.operacaoId === operacaoId) ofertasPendentes.delete(tid);
+                    }
+                    return;
+                }
+                // Falha de API: NUNCA recusa. Cai para blob e segue.
+                console.warn("showDirectoryPicker falhou, caindo para blob:", e);
+                op.modoSalvamento = "blob";
+                usouBlob = true;
             }
-        }else {
+        } else {
             op.modoSalvamento = "blob";
+            usouBlob = true;
         }
 
         op.autorizada = true;
         try { op.dc.send(JSON.stringify({ type: "operation-accept", operacaoId })); } catch {}
 
-        // Cria cartão único no receptor (mesmo evento do emissor)
         emitir("physicalcloud:operacao-iniciada", {
             operacaoId, sessaoId: op.sessaoId, direcao: "recebimento",
             totalArquivos: op.totalArquivos, totalBytes: op.totalBytes,
             totalLotes: Math.ceil(op.totalArquivos / TAMANHO_LOTE) || 1,
+        });
+
+        if (usouBlob) {
+            emitir("physicalcloud:modo-salvamento-blob", {
+                operacaoId, sessaoId: op.sessaoId,
+                totalArquivos: op.totalArquivos,
+            });
+        }
+
+        const pendentes = Array.from(ofertasPendentes.values()).filter(o => o.operacaoId === operacaoId);
+        for (const o of pendentes) {
+            ofertasPendentes.delete(o.transferId);
+            await aceitarArquivoInterno(o);
+        }
+    },
+
+    /**
+     * FASE 1 / Bug #4: auto-aceite de pull.
+     * Nunca tenta picker, sempre blob. Só é chamado quando o operacaoId
+     * bate com um pull registrado por esta sessão (Bug #10).
+     * @param {string} operacaoId
+     */
+    async aceitarOperacaoAutomatica(operacaoId) {
+        const op = ofertasOperacoes.get(operacaoId);
+        if (!op || op.autorizada || op.recusada) return;
+        if (!op.dc || op.dc.readyState !== "open") {
+            ofertasOperacoes.delete(operacaoId);
+            return;
+        }
+
+        op.modoSalvamento = "blob";
+        op.autorizada = true;
+        try { op.dc.send(JSON.stringify({ type: "operation-accept", operacaoId })); } catch {}
+
+        emitir("physicalcloud:operacao-iniciada", {
+            operacaoId, sessaoId: op.sessaoId, direcao: "recebimento",
+            totalArquivos: op.totalArquivos, totalBytes: op.totalBytes,
+            totalLotes: Math.ceil(op.totalArquivos / TAMANHO_LOTE) || 1,
+        });
+
+        emitir("physicalcloud:modo-salvamento-blob", {
+            operacaoId, sessaoId: op.sessaoId, totalArquivos: op.totalArquivos,
         });
 
         const pendentes = Array.from(ofertasPendentes.values()).filter(o => o.operacaoId === operacaoId);
@@ -1191,7 +1346,11 @@ window.addEventListener("physicalcloud:share-folder-solicitado", async (event) =
         ofertasOperacoes.delete(operacaoId);
     },
 
-    /** @param {string} operacaoId */
+    /**
+     * FASE 1 / Bug #11: cancela operação no emissor ou receptor.
+     * No receptor, aborta writers em voo e notifica o emissor.
+     * @param {string} operacaoId
+     */
     cancelarOperacao(operacaoId) {
         const opEnvio = operacoes.get(operacaoId);
         if (opEnvio) {
@@ -1199,7 +1358,6 @@ window.addEventListener("physicalcloud:share-folder-solicitado", async (event) =
             const sessaoId = opEnvio.sessaoId;
             const dc = canais.get(sessaoId);
 
-            // Notifica SEMPRE o peer, mesmo sem arquivo ativo (evita travar no timeout)
             if (dc && dc.readyState === "open") {
                 try { dc.send(JSON.stringify({ type: "operation-cancel", operacaoId })); } catch {}
             }
@@ -1232,6 +1390,23 @@ window.addEventListener("physicalcloud:share-folder-solicitado", async (event) =
         if (opRec) {
             opRec.recusada = true;
             try { opRec.dc.send(JSON.stringify({ type: "operation-cancel", operacaoId })); } catch {}
+
+            for (const [sid, rec] of Array.from(recebimentos.entries())) {
+                if (rec.operacaoId === operacaoId) {
+                    if (rec.writerHandle) rec.writerHandle.abort().catch(() => {});
+                    recebimentos.delete(sid);
+                    ativasRecebimento.delete(sid);
+                    emitir("physicalcloud:transfer-cancelado", { transferId: rec.transferId, sessaoId: sid });
+                }
+            }
+
+            for (const [tid, o] of Array.from(ofertasPendentes.entries())) {
+                if (o.operacaoId === operacaoId) {
+                    ofertasPendentes.delete(tid);
+                    try { o.dc.send(JSON.stringify({ type: "file-error", transferId: tid, motivo: "Cancelado pelo receptor." })); } catch {}
+                }
+            }
+
             emitir("physicalcloud:operacao-cancelada", { operacaoId, sessaoId: opRec.sessaoId, direcao: "recebimento" });
             ofertasOperacoes.delete(operacaoId);
         }
@@ -1268,3 +1443,5 @@ window.addEventListener("physicalcloud:share-folder-solicitado", async (event) =
         }
     },
 };
+
+// ═══ FIM DA PARTE 3/3 ═══
