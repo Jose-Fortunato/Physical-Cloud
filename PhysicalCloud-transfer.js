@@ -795,11 +795,53 @@ async function tratarFileDone(sessaoId, msg, dc) {
         emitir("physicalcloud:transfer-erro", { sessaoId, transferId: rec.transferId, operacaoId: rec.operacaoId, motivo: "Arquivo corrompido." });
         return;
     }
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = rec.nome;
-    document.body.appendChild(a); a.click();
-    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 5000);
+        // Bloco D / Bug #1: download neutro (sem mencionar gerenciador ou pasta).
+    // Tratamos dois casos de falha:
+    //  - Navegador sem suporte a <a download> → avisa o usuário
+    //  - createObjectURL ou clique falha → cancela o arquivo corretamente
+    // O gerenciador usado é decisão do sistema operacional, não do site.
+    let downloadOk = false;
+    try {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.rel = "noopener";
+        // Verifica se o navegador respeita o atributo download
+        if ("download" in a) {
+            a.download = rec.nome;
+        } else {
+            // Sem suporte, o clique abre o arquivo na aba — não é o comportamento
+            // esperado para "salvar". Avisa o usuário em vez de disparar.
+            emitir("physicalcloud:download-falhou", {
+                transferId: rec.transferId, sessaoId, nome: rec.nome,
+                motivo: "O navegador não suporta salvar arquivos diretamente. Abra em um navegador atualizado.",
+            });
+            URL.revokeObjectURL(url);
+            return;
+        }
+        document.body.appendChild(a);
+        a.click();
+        downloadOk = true;
+        setTimeout(() => {
+            try { document.body.removeChild(a); } catch {}
+            try { URL.revokeObjectURL(url); } catch {}
+        }, 5000);
+    } catch (e) {
+        console.warn("Falha ao disparar download do blob:", e);
+        emitir("physicalcloud:download-falhou", {
+            transferId: rec.transferId, sessaoId, nome: rec.nome,
+            motivo: "Não foi possível iniciar o download no navegador.",
+        });
+    }
+
+    if (!downloadOk) {
+        // Não envia file-ok — o emissor deve saber que o arquivo não chegou ao disco
+        try { dc.send(JSON.stringify({ type: "file-error", transferId: rec.transferId, motivo: "Falha ao salvar no dispositivo." })); } catch {}
+        recebimentos.delete(sessaoId);
+        ativasRecebimento.delete(sessaoId);
+        return;
+    }
+
     try { dc.send(JSON.stringify({ type: "file-ok", transferId: rec.transferId })); } catch {}
     recebimentos.delete(sessaoId);
     ativasRecebimento.delete(sessaoId);
