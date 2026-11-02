@@ -1298,31 +1298,111 @@ window.addEventListener("physicalcloud:solicitar-download-remoto", (event) => {
     }
 });
 
-window.addEventListener("physicalcloud:share-folder-solicitado", async (event) => {
-    const { sessaoId } = /** @type {CustomEvent} */ (event).detail;
-    if (!canais.has(sessaoId)) return;
-    if (!temDirectoryPicker()) {
-        notificarPastaCompartilhada(sessaoId, false, "Este dispositivo não suporta compartilhar pasta.");
-        /** @type {any} */ (window).PhysicalCloud?.aviso?.("Este dispositivo não suporta compartilhar pasta.");
-        return;
-    }
-    try {
-        const handle = await /** @type {any} */ (window).showDirectoryPicker({ mode: "read" });
-        pastasCompartilhadas.set(sessaoId, handle);
-        notificarPastaCompartilhada(sessaoId, true);
-        /** @type {any} */ (window).PhysicalCloud?.aviso?.("Pasta compartilhada com o outro dispositivo.");
-    } catch (e) {
-        const erro = /** @type {{ name?: string, message?: string }} */ (e);
-        const msg = erro && erro.name === "AbortError" ? "Seleção cancelada." : (erro?.message || "Falha ao selecionar pasta.");
-        notificarPastaCompartilhada(sessaoId, false, msg);
-    }
-});
+// Bloco B / Bug #3:
+// O picker de compartilhamento NÃO é mais aberto automaticamente por este módulo.
+// O evento physicalcloud:share-folder-solicitado é emitido normalmente em
+// tratarMensagemJson; o index.html escuta, mostra o modal de confirmação, e só
+// chama PhysicalCloudTransfer.selecionarPastaParaCompartilhar(sessaoId) após o
+// clique do usuário — o que preserva o gesture exigido por showDirectoryPicker.
 
 // ─── API pública ───
 
 (/** @type {any} */ (window)).PhysicalCloudTransfer = {
     enfileirarArquivos, canais, transferencias, operacoes, ofertasOperacoes,
     solicitarCompartilhamentoRemoto,
+        /**
+     * Bloco B / Bug #8: aceita uma operação usando um handle de diretório já
+     * validado (permissão "granted"). Usado pelo auto-aceite com destino padrão
+     * salvo em IndexedDB. Não abre picker.
+     * @param {string} operacaoId
+     * @param {FileSystemDirectoryHandle} destinoHandle
+     */
+    async aceitarOperacaoComHandle(operacaoId, destinoHandle) {
+        const op = ofertasOperacoes.get(operacaoId);
+        if (!op || op.autorizada || op.recusada) return;
+        if (!op.dc || op.dc.readyState !== "open") {
+            ofertasOperacoes.delete(operacaoId);
+            return;
+        }
+
+        op.destinoHandle = destinoHandle;
+        op.modoSalvamento = "diretorio";
+        op.autorizada = true;
+        try { op.dc.send(JSON.stringify({ type: "operation-accept", operacaoId })); } catch {}
+
+        emitir("physicalcloud:operacao-iniciada", {
+            operacaoId, sessaoId: op.sessaoId, direcao: "recebimento",
+            totalArquivos: op.totalArquivos, totalBytes: op.totalBytes,
+            totalLotes: Math.ceil(op.totalArquivos / TAMANHO_LOTE) || 1,
+        });
+
+        const pendentes = Array.from(ofertasPendentes.values()).filter(o => o.operacaoId === operacaoId);
+        for (const o of pendentes) {
+            ofertasPendentes.delete(o.transferId);
+            await aceitarArquivoInterno(o);
+        }
+    },
+
+    /**
+     * Bloco B / Bug #3: abre o picker no próprio dispositivo para autorizar
+     * o compartilhamento de uma pasta com a sessão remota. Chamado pelo
+     * index.html após confirmação do usuário (preserva o gesture).
+     * @param {string} sessaoId
+     * @returns {Promise<{ sucesso: boolean, erro?: string }>}
+     */
+    async selecionarPastaParaCompartilhar(sessaoId) {
+        if (!canais.has(sessaoId)) {
+            return { sucesso: false, erro: "Sessão indisponível." };
+        }
+        if (!temDirectoryPicker()) {
+            return { sucesso: false, erro: "Este dispositivo não suporta compartilhar pasta." };
+        }
+        try {
+            const handle = await /** @type {any} */ (window).showDirectoryPicker({ mode: "read" });
+            pastasCompartilhadas.set(sessaoId, handle);
+            notificarPastaCompartilhada(sessaoId, true);
+            return { sucesso: true };
+        } catch (e) {
+            const erro = /** @type {{ name?: string, message?: string }} */ (e);
+            if (erro && erro.name === "AbortError") {
+                // Usuário cancelou → não notifica erro, é decisão dele
+                return { sucesso: false, erro: "cancelado" };
+            }
+            const msg = erro?.message || "Falha ao selecionar pasta.";
+            notificarPastaCompartilhada(sessaoId, false, msg);
+            return { sucesso: false, erro: msg };
+        }
+    },
+
+    /**
+     * Bloco B / Bug #3: alternativa para dispositivos sem showDirectoryPicker
+     * (Android). Envia os arquivos selecionados via input webkitdirectory como
+     * uma operação de transferência normal. O solicitante recebe os arquivos
+     * imediatamente (sem explorador navegável depois).
+     * @param {string} sessaoId
+     * @param {File[]} arquivos
+     */
+    compartilharArquivosSelecionados(sessaoId, arquivos) {
+        if (!canais.has(sessaoId)) return;
+        if (!arquivos || arquivos.length === 0) return;
+        const entradas = arquivos.map(f => ({
+            file: f,
+            caminhoRelativo: /** @type {any} */ (f).webkitRelativePath || f.name,
+        }));
+        iniciarOperacaoEnvio(sessaoId, entradas).catch(e => {
+            console.error("Erro ao enviar arquivos selecionados:", e);
+        });
+    },
+
+    /**
+     * Bloco B / Bug #3: notifica o remoto que o usuário recusou o compartilhamento.
+     * @param {string} sessaoId
+     * @param {string} [motivo]
+     */
+    recusarCompartilhamentoRemoto(sessaoId, motivo) {
+        if (!canais.has(sessaoId)) return;
+        notificarPastaCompartilhada(sessaoId, false, motivo || "Recusado pelo usuário.");
+    },
 
     /**
      * FASE 1 / Bug #1:

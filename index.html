@@ -131,7 +131,8 @@
     </div>
   </div>
 
-  <!-- Modal de recebimento — FASE 1 / Bug #9 (sem redundância) -->
+ 
+   <!-- Modal de recebimento — Bloco B / Bug #8 (preferências separadas) -->
   <div class="modal-overlay" id="modal-recebimento">
     <div class="modal-box">
       <h2>Receber arquivos?</h2>
@@ -142,15 +143,22 @@
         <div id="recebimento-lotes" style="font-size: 12px; color: #ffd280; margin-top: 6px; display: none;"></div>
       </div>
       <p style="font-size: 12px; color: #9a9a9a; margin-bottom: 16px; text-align: left; line-height: 1.5;">
-        Você autoriza uma única vez. Os arquivos serão gravados automaticamente no destino escolhido, sem novas confirmações.
+        Você autoriza uma única vez. Os arquivos serão gravados no destino que você escolher, sem novas confirmações.
       </p>
-      <p id="recebimento-aviso-android" style="display:none; font-size: 12px; color: #ffd280; background: rgba(255,165,0,0.08); border: 1px solid #ffa500; border-radius: 6px; padding: 8px 10px; margin-bottom: 16px; text-align: left; line-height: 1.5;">
-        📱 Neste dispositivo, os arquivos serão salvos na pasta <strong>Downloads</strong> do navegador. Depois você poderá movê-los com o ZArchiver.
-      </p>
-      <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 16px; font-size: 13px; color: #9a9a9a;">
-        <input type="checkbox" id="nao-mostrar-recebimento">
-        Não mostrar esta mensagem novamente
-      </label>
+      <div class="recebimento-opcoes">
+        <label>
+          <input type="checkbox" id="nao-mostrar-recebimento">
+          Ocultar esta tela nas próximas vezes
+        </label>
+        <div class="opcao-hint">A escolha do destino continua sendo feita a cada recebimento.</div>
+        <label id="label-salvar-sempre" style="margin-top: 4px;">
+          <input type="checkbox" id="salvar-sempre-nesta-pasta">
+          Salvar sempre nesta pasta (sem escolher a cada vez)
+        </label>
+        <div class="opcao-hint" id="hint-salvar-sempre" style="display: none;">
+          Você precisará escolher a pasta uma vez. Depois disso, os arquivos futuros serão salvos nela automaticamente, enquanto a permissão do navegador continuar válida.
+        </div>
+      </div>
       <div style="display: flex; gap: 12px; justify-content: center;">
         <button class="primary-btn" id="btn-aceitar-recebimento">Aceitar</button>
         <button class="secondary-btn" id="btn-recusar-recebimento" style="color: #ff6b6b; border-color: #ff6b6b;">Recusar</button>
@@ -241,6 +249,35 @@
       <button class="primary-btn" id="btn-app-futuro-ok" style="align-self: flex-end;">Entendi</button>
     </div>
   </div>
+    <!-- Bloco B / Bug #3: modal de confirmação para compartilhar pasta -->
+  <div class="modal-overlay" id="modal-compartilhar-pasta">
+    <div class="modal-box">
+      <h2>Compartilhar pasta?</h2>
+      <p class="subtitle" id="compartilhar-texto">Outro dispositivo quer acessar uma pasta deste dispositivo.</p>
+      <div class="compartilhar-aviso" id="compartilhar-aviso">
+        O outro dispositivo poderá <strong>visualizar e baixar</strong> somente os arquivos da pasta que você escolher agora. Nada mais será acessível. Você pode recusar a qualquer momento.
+      </div>
+      <div class="compartilhar-botoes">
+        <button class="secondary-btn" id="btn-recusar-compartilhar" style="color: #ff6b6b; border-color: #ff6b6b;">Recusar</button>
+        <button class="primary-btn" id="btn-selecionar-pasta-compartilhar">Selecionar pasta</button>
+      </div>
+      <button class="secondary-btn" id="btn-enviar-arquivos-agora" style="display: none; width: 100%; margin-top: 10px; border-color: var(--accent); color: var(--accent);">
+        📂 Enviar arquivos selecionados agora
+      </button>
+      <p id="compartilhar-fallback-hint" style="display: none; font-size: 12px; color: #9a9a9a; margin-top: 10px; text-align: left; line-height: 1.5;">
+        Este dispositivo não permite compartilhar uma pasta para navegação. Você pode selecionar arquivos e enviá-los agora — eles chegarão ao outro dispositivo, mas sem navegação remota depois.
+      </p>
+    </div>
+  </div>
+    <!-- Bloco B / Bug #8: prompt inline quando o modal completo está oculto -->
+  <div id="prompt-recebimento-inline" aria-live="polite">
+    <div class="prompt-titulo" id="prompt-titulo">Receber arquivos?</div>
+    <div class="prompt-detalhe" id="prompt-detalhe">0 arquivos</div>
+    <div class="prompt-acoes">
+      <button class="prompt-recusar" id="btn-prompt-recusar">Recusar</button>
+      <button class="prompt-aceitar" id="btn-prompt-aceitar">Aceitar</button>
+    </div>
+  </div>
   <button class="btn-tornar-servidor" id="btn-tornar-servidor">Se tornar o dispositivo servidor</button>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
@@ -317,6 +354,83 @@
       const canais = window.PhysicalCloudTransfer?.canais;
       if (canais && canais.size === 1) return Array.from(canais.keys())[0];
       return null;
+    }
+        function temDirectoryPicker() {
+      return typeof window.showDirectoryPicker === "function";
+    }
+
+    // ─── Bloco B: IndexedDB para o handle da pasta padrão ───
+    const DB_HANDLES_NOME = "physicalcloud-handles";
+    const DB_HANDLES_VERSION = 1;
+    const STORE_HANDLES = "handles";
+
+    function abrirDBHandles() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open(DB_HANDLES_NOME, DB_HANDLES_VERSION);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(STORE_HANDLES)) {
+            db.createObjectStore(STORE_HANDLES, { keyPath: "id" });
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    async function salvarDestinoPadrao(handle) {
+      try {
+        const db = await abrirDBHandles();
+        await new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_HANDLES, "readwrite");
+          const store = tx.objectStore(STORE_HANDLES);
+          const req = store.put({ id: "destinoPadrao", handle, salvoEm: Date.now() });
+          req.onsuccess = () => resolve();
+          req.onerror = () => reject(req.error);
+        });
+      } catch (e) {
+        console.warn("Não foi possível salvar destino padrão:", e);
+      }
+    }
+
+    async function obterDestinoPadrao() {
+      try {
+        const db = await abrirDBHandles();
+        return await new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_HANDLES, "readonly");
+          const store = tx.objectStore(STORE_HANDLES);
+          const req = store.get("destinoPadrao");
+          req.onsuccess = () => resolve(req.result && req.result.handle ? req.result.handle : null);
+          req.onerror = () => reject(req.error);
+        });
+      } catch (e) {
+        console.warn("Não foi possível ler destino padrão:", e);
+        return null;
+      }
+    }
+
+    async function limparDestinoPadrao() {
+      try {
+        const db = await abrirDBHandles();
+        await new Promise((resolve, reject) => {
+          const tx = db.transaction(STORE_HANDLES, "readwrite");
+          const store = tx.objectStore(STORE_HANDLES);
+          const req = store.delete("destinoPadrao");
+          req.onsuccess = () => resolve();
+          req.onerror = () => reject(req.error);
+        });
+      } catch (e) {
+        console.warn("Não foi possível limpar destino padrão:", e);
+      }
+    }
+
+    async function permissaoHandle(handle) {
+      try {
+        if (!handle || typeof handle.queryPermission !== "function") return "granted";
+        return await handle.queryPermission({ mode: "readwrite" });
+      } catch {
+        return "denied";
+      }
     }
 
     // ─── Estado da nuvem ───
