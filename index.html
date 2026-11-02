@@ -896,41 +896,70 @@
     // - physicalCloudOcultarModalRecebimento → só controla exibição do modal
     // - destinoPadrao (IndexedDB) → pasta salva para auto-aceite
     // Nunca um afeta o outro.
-    window.addEventListener("physicalcloud:operacao-recebida", async (ev) => {
-      const { operacaoId, nomeRemetente, totalArquivos, totalBytes, totalLotes } = ev.detail;
+       // ═════════════════════════════════════════════════════════════════════
+    // Bloco C / Bug #5: fila de recebimentos na UI.
+    // ═════════════════════════════════════════════════════════════════════
+    const filaModaisRecebimento = [];
+    let modalRecebimentoAberto = false;
+    let promptInlineAtual = null;
+    // (operacaoAtualId NÃO é re-declarado — já existe acima, da Fase 1)
 
-      const ocultarModal = localStorage.getItem("physicalCloudOcultarModalRecebimento") === "true";
+    function atualizarIndicadorFila() {
+      let el = $("recebimento-indicador-fila");
+      const nomeEl = $("recebimento-nome");
+      if (!nomeEl) return;
+      const pendentes = filaModaisRecebimento.length;
+      if (pendentes <= 1) {
+        if (el && el.parentNode) el.parentNode.removeChild(el);
+        return;
+      }
+      if (!el) {
+        el = document.createElement("div");
+        el.id = "recebimento-indicador-fila";
+        el.style.cssText =
+          "font-size: 11px; color: #ffd280; margin-top: 8px; font-weight: 500;";
+        nomeEl.parentNode.appendChild(el);
+      }
+      el.textContent = `${pendentes} solicitações aguardando — exibindo a primeira.`;
+    }
 
-      if (ocultarModal) {
-        // Tenta auto-aceite com pasta salva + permissão válida
-        const handle = await obterDestinoPadrao();
-        if (handle) {
-          const perm = await permissaoHandle(handle);
-          if (perm === "granted") {
-            window.PhysicalCloudTransfer.aceitarOperacaoComHandle(operacaoId, handle).catch((e) => {
-              console.error("Falha ao auto-aceitar com destino padrão:", e);
-            });
-            return;
-          }
-          if (perm === "denied") {
-            await limparDestinoPadrao();
-          }
-          // perm === "prompt" → cai no prompt inline para renovar gesto
-        }
-        // Sem pasta válida → prompt inline (não abre picker sem clique do usuário)
-        mostrarPromptInline(operacaoId, { totalArquivos, totalBytes });
+    function esconderPromptInline() {
+      promptInlineAtual = null;
+      $("prompt-recebimento-inline").classList.remove("ativo");
+    }
+
+    function abrirProximoRecebimento() {
+      if (modalRecebimentoAberto) return;
+      if (promptInlineAtual) return;
+
+      if (filaModaisRecebimento.length === 0) {
+        // Nada pendente — limpa estado
+        $("modal-recebimento").classList.remove("active");
+        esconderPromptInline();
         return;
       }
 
-      // Modal completo (comportamento padrão)
-      operacaoAtualId = operacaoId;
-      $("recebimento-texto").textContent = `"${nomeRemetente}" quer enviar arquivos para este dispositivo.`;
-      $("recebimento-nome").textContent = `Receber ${totalArquivos} arquivo${totalArquivos === 1 ? "" : "s"}`;
-      $("recebimento-tamanho").textContent = `${formatarTamanho(totalBytes)} no total`;
+      const item = filaModaisRecebimento[0];
+
+      if (item.ocultar) {
+        abrirPromptInline(item);
+      } else {
+        abrirModalCompleto(item);
+      }
+    }
+
+    function abrirModalCompleto(item) {
+      modalRecebimentoAberto = true;
+      operacaoAtualId = item.operacaoId;
+
+      $("recebimento-texto").textContent = `"${item.nomeRemetente}" quer enviar arquivos para este dispositivo.`;
+      $("recebimento-nome").textContent =
+        `Receber ${item.totalArquivos} arquivo${item.totalArquivos === 1 ? "" : "s"}`;
+      $("recebimento-tamanho").textContent = `${formatarTamanho(item.totalBytes)} no total`;
 
       const lotesEl = $("recebimento-lotes");
-      if (totalArquivos > 100) {
-        const lotes = totalLotes || Math.ceil(totalArquivos / 100);
+      if (item.totalArquivos > 100) {
+        const lotes = item.totalLotes || Math.ceil(item.totalArquivos / 100);
         lotesEl.style.display = "";
         lotesEl.textContent =
           `⚠️ Será dividido em ${lotes} lotes de até 100 arquivos. O processamento entre lotes é automático.`;
@@ -938,7 +967,6 @@
         lotesEl.style.display = "none";
       }
 
-      // Reset dos checkboxes
       const chkOcultar = $("nao-mostrar-recebimento");
       const chkSalvar = $("salvar-sempre-nesta-pasta");
       const hintSalvar = $("hint-salvar-sempre");
@@ -947,7 +975,6 @@
       if (chkSalvar) chkSalvar.checked = false;
       if (hintSalvar) hintSalvar.style.display = "none";
 
-      // Desabilita "salvar sempre" se não houver showDirectoryPicker (Android)
       if (labelSalvar && chkSalvar) {
         if (!temDirectoryPicker()) {
           labelSalvar.classList.add("disabled");
@@ -958,10 +985,61 @@
         }
       }
 
+      atualizarIndicadorFila();
       $("modal-recebimento").classList.add("active");
+    }
+
+    function abrirPromptInline(item) {
+      promptInlineAtual = item;
+      $("prompt-titulo").textContent = "Receber arquivos?";
+      const arqTxt = `${item.totalArquivos} arquivo${item.totalArquivos === 1 ? "" : "s"}`;
+      const extra = filaModaisRecebimento.length > 1
+        ? ` (${filaModaisRecebimento.length} na fila)`
+        : "";
+      $("prompt-detalhe").textContent =
+        `${arqTxt} · ${formatarTamanho(item.totalBytes)}${extra}`;
+      $("prompt-recebimento-inline").classList.add("ativo");
+    }
+
+    function concluirPrimeiroDaFila() {
+      filaModaisRecebimento.shift();
+    }
+
+    // ─── Handler principal: cada operação entra na fila ───
+    window.addEventListener("physicalcloud:operacao-recebida", async (ev) => {
+      const { operacaoId, nomeRemetente, totalArquivos, totalBytes, totalLotes } = ev.detail;
+      const ocultarModal = localStorage.getItem("physicalCloudOcultarModalRecebimento") === "true";
+
+      if (ocultarModal) {
+        // Tenta auto-aceite com pasta padrão salva
+        const handle = await obterDestinoPadrao();
+        if (handle) {
+          const perm = await permissaoHandle(handle);
+          if (perm === "granted") {
+            window.PhysicalCloudTransfer.aceitarOperacaoComHandle(operacaoId, handle)
+              .catch((e) => console.error("Falha ao auto-aceitar com destino padrão:", e));
+            return;
+          }
+          if (perm === "denied") {
+            await limparDestinoPadrao();
+          }
+          // perm === "prompt" → cai no prompt inline
+        }
+        filaModaisRecebimento.push({
+          operacaoId, nomeRemetente, totalArquivos, totalBytes, totalLotes, ocultar: true,
+        });
+        abrirProximoRecebimento();
+        return;
+      }
+
+      filaModaisRecebimento.push({
+        operacaoId, nomeRemetente, totalArquivos, totalBytes, totalLotes, ocultar: false,
+      });
+      abrirProximoRecebimento();
     });
 
-        $("btn-aceitar-recebimento")?.addEventListener("click", async () => {
+    // ─── Aceitar / Recusar no modal completo ───
+    $("btn-aceitar-recebimento")?.addEventListener("click", async () => {
       const opId = operacaoAtualId;
       if (!opId) return;
 
@@ -970,32 +1048,32 @@
       const salvarSempre = !!(chkSalvar && chkSalvar.checked && !chkSalvar.disabled);
       const ocultar = !!(chkOcultar && chkOcultar.checked);
 
-      // Persiste a preferência de OCULTAR (independente de pasta padrão)
       try {
         if (ocultar) localStorage.setItem("physicalCloudOcultarModalRecebimento", "true");
         else localStorage.removeItem("physicalCloudOcultarModalRecebimento");
       } catch { /* storage indisponível */ }
 
-      // Captura handle ANTES de qualquer await (preserva user gesture)
       let handleParaSalvar = null;
       if (salvarSempre && temDirectoryPicker()) {
         try {
           handleParaSalvar = await window.showDirectoryPicker({ mode: "readwrite" });
         } catch (e) {
           if (e && e.name === "AbortError") {
-            // Usuário cancelou o picker — mantém modal aberto para nova tentativa
             window.PhysicalCloud?.aviso?.(
               "Seleção cancelada. Desmarque 'Salvar sempre' para usar o fluxo padrão, ou clique em Recusar."
             );
             return;
           }
-          // Outro erro → cai no fluxo padrão (aceitarOperacao decide picker/blob)
           handleParaSalvar = null;
         }
       }
 
+      // Fecha este e avança na fila (antes de processar a aceitação async)
+      modalRecebimentoAberto = false;
       operacaoAtualId = null;
       $("modal-recebimento").classList.remove("active");
+      concluirPrimeiroDaFila();
+      abrirProximoRecebimento();
 
       try {
         if (handleParaSalvar) {
@@ -1008,41 +1086,40 @@
         console.error("Falha ao aceitar operação:", e);
       }
     });
-        // ─── Bloco B: prompt inline (fallback quando modal está oculto) ───
-    let promptInlineAtual = null;
 
-    function mostrarPromptInline(operacaoId, info) {
-      promptInlineAtual = { operacaoId };
-      $("prompt-titulo").textContent = "Receber arquivos?";
-      const arqTxt = `${info.totalArquivos} arquivo${info.totalArquivos === 1 ? "" : "s"}`;
-      $("prompt-detalhe").textContent = `${arqTxt} · ${formatarTamanho(info.totalBytes)}`;
-      $("prompt-recebimento-inline").classList.add("ativo");
-    }
+    $("btn-recusar-recebimento")?.addEventListener("click", () => {
+      const opId = operacaoAtualId;
+      modalRecebimentoAberto = false;
+      operacaoAtualId = null;
+      $("modal-recebimento").classList.remove("active");
+      concluirPrimeiroDaFila();
+      abrirProximoRecebimento();
+      if (opId) window.PhysicalCloudTransfer.recusarOperacao(opId);
+    });
 
-    function esconderPromptInline() {
-      promptInlineAtual = null;
-      $("prompt-recebimento-inline").classList.remove("ativo");
-    }
-
+    // ─── Aceitar / Recusar no prompt inline ───
     $("btn-prompt-aceitar")?.addEventListener("click", async () => {
-      const opId = promptInlineAtual && promptInlineAtual.operacaoId;
+      const item = promptInlineAtual;
       esconderPromptInline();
-      if (!opId) return;
+      concluirPrimeiroDaFila();
+      abrirProximoRecebimento();
+      if (!item) return;
       try {
-        await window.PhysicalCloudTransfer.aceitarOperacao(opId);
+        await window.PhysicalCloudTransfer.aceitarOperacao(item.operacaoId);
       } catch (e) {
         console.error("Falha ao aceitar via prompt inline:", e);
       }
     });
 
     $("btn-prompt-recusar")?.addEventListener("click", () => {
-      const opId = promptInlineAtual && promptInlineAtual.operacaoId;
+      const item = promptInlineAtual;
       esconderPromptInline();
-      if (!opId) return;
-      window.PhysicalCloudTransfer.recusarOperacao(opId);
+      concluirPrimeiroDaFila();
+      abrirProximoRecebimento();
+      if (item) window.PhysicalCloudTransfer.recusarOperacao(item.operacaoId);
     });
 
-    // Mostra/esconde o hint do "salvar sempre" quando o checkbox muda
+    // ─── Hint do "Salvar sempre" quando o checkbox muda ───
     $("salvar-sempre-nesta-pasta")?.addEventListener("change", (ev) => {
       const hint = $("hint-salvar-sempre");
       if (!hint) return;
@@ -1102,7 +1179,7 @@
       $("lista-transfers").appendChild(card);
       $("transfers-ativos").style.display = "";
 
-      operacoesUI.set(operacaoId, {
+         operacoesUI.set(operacaoId, {
         card, barra, status, tamanho, nome, cancelar,
         sessaoId, direcao, totalArquivos,
         arquivosDone: 0, arquivosErro: 0,
@@ -1112,6 +1189,7 @@
         amostras: [],
         ultimoArquivoBytes: 0,
         iniciadoEm: Date.now(),
+        iniciado: false,
         finalizado: false,
       });
     }
@@ -1122,8 +1200,17 @@
       ui.barra.style.width = pct + "%";
     }
 
-    function atualizarTextoStatus(ui) {
+        function atualizarTextoStatus(ui) {
       if (ui.finalizado) return;
+
+      // Bloco C / Bug #5: se a operação ainda não começou a receber/enviar
+      // (está na fila), mostrar "Aguardando..." em vez de "0 / N".
+      if (!ui.iniciado && ui.arquivosDone === 0 && ui.arquivosErro === 0 && ui.bytesAcumulados === 0) {
+        ui.status.textContent = "Aguardando na fila…";
+        return;
+      }
+      ui.iniciado = true;
+
       const processados = ui.arquivosDone + ui.arquivosErro;
       const arqTxt = `${processados} / ${ui.totalArquivos} arquivos`;
       const loteTxt = ui.totalLotes > 1 ? ` · lote ${ui.loteAtual} / ${ui.totalLotes}` : "";
@@ -1160,7 +1247,6 @@
           `${formatarTamanho(ui.bytesAcumulados)} / ${formatarTamanho(ui.bytesTotal)}`;
       }
     }
-
     function verificarConclusaoOperacao(operacaoId) {
       const ui = operacoesUI.get(operacaoId);
       if (!ui || ui.finalizado) return;
@@ -1229,12 +1315,13 @@
     });
 
     // Fallback caso operacao-iniciada não tenha sido emitido
-    window.addEventListener("physicalcloud:transfer-inicio", (ev) => {
+       window.addEventListener("physicalcloud:transfer-inicio", (ev) => {
       const { operacaoId, sessaoId, direcao, tamanho, nome } = ev.detail;
       if (!operacaoId) return;
       if (!operacoesUI.has(operacaoId)) criarCartaoOperacao(operacaoId, direcao, 1, sessaoId);
       const ui = operacoesUI.get(operacaoId);
       if (!ui) return;
+      ui.iniciado = true;
       if (tamanho) ui.bytesTotal = Math.max(ui.bytesTotal, ui.bytesAcumulados + tamanho);
       if (nome) ui.nome.textContent = nome;
       atualizarTextoStatus(ui);

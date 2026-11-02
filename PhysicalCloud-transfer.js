@@ -109,14 +109,11 @@ function emitirCancelamento(entrada, sessaoId) {
     entrada.cancelamentoEmitido = true;
     emitir("physicalcloud:transfer-cancelado", { transferId: entrada.transferId, sessaoId });
 }
-
-/** @param {string} sessaoId @returns {boolean} */
-function sessaoTemOperacaoAtiva(sessaoId) {
-    for (const op of operacoes.values()) {
-        if (op.sessaoId === sessaoId) return true;
-    }
-    return false;
-}
+// Bloco C / Bug #5:
+// A função sessaoTemOperacaoAtiva foi removida. Múltiplas operações de envio
+// podem coexistir na mesma sessão; elas compartilham a fila (filas[ sessaoId ])
+// que já processa um arquivo por vez via processarFila, mantendo o protocolo
+// binário simples (um file-offer → chunks → file-done por arquivo em voo).
 
 // FASE 1: helpers de detecção de ambiente
 function temDirectoryPicker() {
@@ -327,7 +324,7 @@ async function coletarArquivosRecursivo(dirHandle, prefixo = "") {
 /**
  * @param {string} sessaoId
  * @param {Array<{ file: File, caminhoRelativo?: string }>} entradas
- * @param {string | null} [operacaoIdForcado]  — usado pelo pull para forçar o ID
+ * @param {string | null} [operacaoIdForcado]  // usado pelo pull para forçar o ID
  */
 async function iniciarOperacaoEnvio(sessaoId, entradas, operacaoIdForcado = null) {
     const dc = canais.get(sessaoId);
@@ -337,13 +334,7 @@ async function iniciarOperacaoEnvio(sessaoId, entradas, operacaoIdForcado = null
     }
     if (entradas.length === 0) return null;
 
-    if (sessaoTemOperacaoAtiva(sessaoId)) {
-        emitir("physicalcloud:transfer-erro", {
-            sessaoId,
-            motivo: "Já existe uma transferência em andamento para este dispositivo. Aguarde terminar.",
-        });
-        return null;
-    }
+    
 
     const operacaoId = operacaoIdForcado || gerarTransferId();
     const arquivos = entradas.map(e => ({
