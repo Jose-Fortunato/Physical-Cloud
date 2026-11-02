@@ -432,6 +432,16 @@
         return "denied";
       }
     }
+        // ─── Bloco B: migration da chave antiga de "não mostrar" ───
+    (function migrarChaveRecebimento() {
+      try {
+        const antiga = localStorage.getItem("physicalCloudNaoMostrarRecebimento");
+        if (antiga !== null) {
+          localStorage.setItem("physicalCloudOcultarModalRecebimento", antiga);
+          localStorage.removeItem("physicalCloudNaoMostrarRecebimento");
+        }
+      } catch { /* storage indisponível */ }
+    })();
 
     // ─── Estado da nuvem ───
     function atualizarEstadoNuvem() {
@@ -683,8 +693,89 @@
     });
 
     // Aviso quando EU sou solicitado a compartilhar uma pasta
-    window.addEventListener("physicalcloud:share-folder-solicitado", () => {
-      window.PhysicalCloud?.aviso?.("O outro dispositivo solicitou acesso a uma pasta.");
+        // Bloco B / Bug #3: abre modal de confirmação em vez de abrir o picker
+    // automaticamente. O picker só é aberto depois do clique do usuário.
+    let sessaoCompartilharAtual = null;
+
+    window.addEventListener("physicalcloud:share-folder-solicitado", (ev) => {
+      const { sessaoId } = ev.detail;
+      const sessoes = obterSessoes();
+      const s = sessoes.get(sessaoId);
+      const nome = (s && s.nome) ? s.nome : "O outro dispositivo";
+
+      sessaoCompartilharAtual = sessaoId;
+      $("compartilhar-texto").textContent = `"${nome}" quer acessar uma pasta deste dispositivo.`;
+
+      const btnSelecionar = $("btn-selecionar-pasta-compartilhar");
+      const btnEnviarAgora = $("btn-enviar-arquivos-agora");
+      const hint = $("compartilhar-fallback-hint");
+
+      if (temDirectoryPicker()) {
+        if (btnSelecionar) btnSelecionar.style.display = "";
+        if (btnEnviarAgora) btnEnviarAgora.style.display = "none";
+        if (hint) hint.style.display = "none";
+      } else {
+        if (btnSelecionar) btnSelecionar.style.display = "none";
+        if (btnEnviarAgora) btnEnviarAgora.style.display = "";
+        if (hint) hint.style.display = "";
+      }
+
+      $("modal-compartilhar-pasta").classList.add("active");
+    });
+        function fecharModalCompartilhar() {
+      sessaoCompartilharAtual = null;
+      $("modal-compartilhar-pasta").classList.remove("active");
+    }
+
+    $("btn-selecionar-pasta-compartilhar")?.addEventListener("click", async () => {
+      const sessaoId = sessaoCompartilharAtual;
+      fecharModalCompartilhar();
+      if (!sessaoId) return;
+      try {
+        const resultado = await window.PhysicalCloudTransfer.selecionarPastaParaCompartilhar(sessaoId);
+        if (resultado && resultado.sucesso) {
+          window.PhysicalCloud?.aviso?.("Pasta compartilhada. O outro dispositivo já pode explorar.");
+        } else if (resultado && resultado.erro && resultado.erro !== "cancelado") {
+          window.PhysicalCloud?.aviso?.("Não foi possível compartilhar: " + resultado.erro);
+        }
+      } catch (e) {
+        console.error("Falha ao compartilhar pasta:", e);
+        window.PhysicalCloud?.aviso?.("Erro ao compartilhar pasta.");
+      }
+    });
+
+    $("btn-recusar-compartilhar")?.addEventListener("click", () => {
+      const sessaoId = sessaoCompartilharAtual;
+      fecharModalCompartilhar();
+      if (!sessaoId) return;
+      window.PhysicalCloudTransfer.recusarCompartilhamentoRemoto(sessaoId, "Recusado pelo usuário.");
+      window.PhysicalCloud?.aviso?.("Compartilhamento recusado.");
+    });
+
+    // Fallback Android: envia arquivos selecionados sem explorador navegável
+    $("btn-enviar-arquivos-agora")?.addEventListener("click", () => {
+      const sessaoId = sessaoCompartilharAtual;
+      fecharModalCompartilhar();
+      if (!sessaoId) return;
+
+      const input = document.createElement("input");
+      input.type = "file";
+      input.webkitdirectory = true;
+      input.multiple = true;
+      input.style.display = "none";
+      document.body.appendChild(input);
+      const limpar = () => { if (input.parentNode) document.body.removeChild(input); };
+      input.addEventListener("cancel", limpar);
+      input.addEventListener("change", () => {
+        const arquivos = Array.from(input.files || []);
+        limpar();
+        if (arquivos.length === 0) return;
+        window.PhysicalCloudTransfer.compartilharArquivosSelecionados(sessaoId, arquivos);
+        window.PhysicalCloud?.aviso?.(
+          `Enviando ${arquivos.length} arquivo(s) para o outro dispositivo.`
+        );
+      });
+      input.click();
     });
 
     // Renderização da listagem recebida
@@ -801,20 +892,39 @@
     // ─── Modal de recebimento (operação inteira) ───
     let operacaoAtualId = null;
 
-    window.addEventListener("physicalcloud:operacao-recebida", (ev) => {
+      // Bloco B / Bug #8: preferências separadas.
+    // - physicalCloudOcultarModalRecebimento → só controla exibição do modal
+    // - destinoPadrao (IndexedDB) → pasta salva para auto-aceite
+    // Nunca um afeta o outro.
+    window.addEventListener("physicalcloud:operacao-recebida", async (ev) => {
       const { operacaoId, nomeRemetente, totalArquivos, totalBytes, totalLotes } = ev.detail;
 
-      // Se o usuário marcou "não mostrar novamente", aceita direto
-      if (localStorage.getItem("physicalCloudNaoMostrarRecebimento") === "true") {
-        window.PhysicalCloudTransfer.aceitarOperacao(operacaoId).catch((e) => {
-          console.error("Falha ao aceitar operação:", e);
-        });
+      const ocultarModal = localStorage.getItem("physicalCloudOcultarModalRecebimento") === "true";
+
+      if (ocultarModal) {
+        // Tenta auto-aceite com pasta salva + permissão válida
+        const handle = await obterDestinoPadrao();
+        if (handle) {
+          const perm = await permissaoHandle(handle);
+          if (perm === "granted") {
+            window.PhysicalCloudTransfer.aceitarOperacaoComHandle(operacaoId, handle).catch((e) => {
+              console.error("Falha ao auto-aceitar com destino padrão:", e);
+            });
+            return;
+          }
+          if (perm === "denied") {
+            await limparDestinoPadrao();
+          }
+          // perm === "prompt" → cai no prompt inline para renovar gesto
+        }
+        // Sem pasta válida → prompt inline (não abre picker sem clique do usuário)
+        mostrarPromptInline(operacaoId, { totalArquivos, totalBytes });
         return;
       }
 
+      // Modal completo (comportamento padrão)
       operacaoAtualId = operacaoId;
       $("recebimento-texto").textContent = `"${nomeRemetente}" quer enviar arquivos para este dispositivo.`;
-      // FASE 1 / Bug #9: sem redundância — nome traz contagem, tamanho traz total
       $("recebimento-nome").textContent = `Receber ${totalArquivos} arquivo${totalArquivos === 1 ? "" : "s"}`;
       $("recebimento-tamanho").textContent = `${formatarTamanho(totalBytes)} no total`;
 
@@ -828,26 +938,115 @@
         lotesEl.style.display = "none";
       }
 
-      const avisoAndroid = $("recebimento-aviso-android");
-      if (avisoAndroid) avisoAndroid.style.display = ehAndroid() ? "" : "none";
+      // Reset dos checkboxes
+      const chkOcultar = $("nao-mostrar-recebimento");
+      const chkSalvar = $("salvar-sempre-nesta-pasta");
+      const hintSalvar = $("hint-salvar-sempre");
+      const labelSalvar = $("label-salvar-sempre");
+      if (chkOcultar) chkOcultar.checked = false;
+      if (chkSalvar) chkSalvar.checked = false;
+      if (hintSalvar) hintSalvar.style.display = "none";
 
-      $("nao-mostrar-recebimento").checked = false;
+      // Desabilita "salvar sempre" se não houver showDirectoryPicker (Android)
+      if (labelSalvar && chkSalvar) {
+        if (!temDirectoryPicker()) {
+          labelSalvar.classList.add("disabled");
+          chkSalvar.disabled = true;
+        } else {
+          labelSalvar.classList.remove("disabled");
+          chkSalvar.disabled = false;
+        }
+      }
+
       $("modal-recebimento").classList.add("active");
     });
 
-    $("btn-aceitar-recebimento")?.addEventListener("click", async () => {
-      if ($("nao-mostrar-recebimento").checked) {
-        localStorage.setItem("physicalCloudNaoMostrarRecebimento", "true");
-      }
+        $("btn-aceitar-recebimento")?.addEventListener("click", async () => {
       const opId = operacaoAtualId;
+      if (!opId) return;
+
+      const chkSalvar = $("salvar-sempre-nesta-pasta");
+      const chkOcultar = $("nao-mostrar-recebimento");
+      const salvarSempre = !!(chkSalvar && chkSalvar.checked && !chkSalvar.disabled);
+      const ocultar = !!(chkOcultar && chkOcultar.checked);
+
+      // Persiste a preferência de OCULTAR (independente de pasta padrão)
+      try {
+        if (ocultar) localStorage.setItem("physicalCloudOcultarModalRecebimento", "true");
+        else localStorage.removeItem("physicalCloudOcultarModalRecebimento");
+      } catch { /* storage indisponível */ }
+
+      // Captura handle ANTES de qualquer await (preserva user gesture)
+      let handleParaSalvar = null;
+      if (salvarSempre && temDirectoryPicker()) {
+        try {
+          handleParaSalvar = await window.showDirectoryPicker({ mode: "readwrite" });
+        } catch (e) {
+          if (e && e.name === "AbortError") {
+            // Usuário cancelou o picker — mantém modal aberto para nova tentativa
+            window.PhysicalCloud?.aviso?.(
+              "Seleção cancelada. Desmarque 'Salvar sempre' para usar o fluxo padrão, ou clique em Recusar."
+            );
+            return;
+          }
+          // Outro erro → cai no fluxo padrão (aceitarOperacao decide picker/blob)
+          handleParaSalvar = null;
+        }
+      }
+
       operacaoAtualId = null;
       $("modal-recebimento").classList.remove("active");
+
+      try {
+        if (handleParaSalvar) {
+          await salvarDestinoPadrao(handleParaSalvar);
+          await window.PhysicalCloudTransfer.aceitarOperacaoComHandle(opId, handleParaSalvar);
+        } else {
+          await window.PhysicalCloudTransfer.aceitarOperacao(opId);
+        }
+      } catch (e) {
+        console.error("Falha ao aceitar operação:", e);
+      }
+    });
+        // ─── Bloco B: prompt inline (fallback quando modal está oculto) ───
+    let promptInlineAtual = null;
+
+    function mostrarPromptInline(operacaoId, info) {
+      promptInlineAtual = { operacaoId };
+      $("prompt-titulo").textContent = "Receber arquivos?";
+      const arqTxt = `${info.totalArquivos} arquivo${info.totalArquivos === 1 ? "" : "s"}`;
+      $("prompt-detalhe").textContent = `${arqTxt} · ${formatarTamanho(info.totalBytes)}`;
+      $("prompt-recebimento-inline").classList.add("ativo");
+    }
+
+    function esconderPromptInline() {
+      promptInlineAtual = null;
+      $("prompt-recebimento-inline").classList.remove("ativo");
+    }
+
+    $("btn-prompt-aceitar")?.addEventListener("click", async () => {
+      const opId = promptInlineAtual && promptInlineAtual.operacaoId;
+      esconderPromptInline();
       if (!opId) return;
       try {
         await window.PhysicalCloudTransfer.aceitarOperacao(opId);
       } catch (e) {
-        console.error("Falha ao aceitar operação:", e);
+        console.error("Falha ao aceitar via prompt inline:", e);
       }
+    });
+
+    $("btn-prompt-recusar")?.addEventListener("click", () => {
+      const opId = promptInlineAtual && promptInlineAtual.operacaoId;
+      esconderPromptInline();
+      if (!opId) return;
+      window.PhysicalCloudTransfer.recusarOperacao(opId);
+    });
+
+    // Mostra/esconde o hint do "salvar sempre" quando o checkbox muda
+    $("salvar-sempre-nesta-pasta")?.addEventListener("change", (ev) => {
+      const hint = $("hint-salvar-sempre");
+      if (!hint) return;
+      hint.style.display = ev.target.checked ? "" : "none";
     });
 
     $("btn-recusar-recebimento")?.addEventListener("click", () => {
