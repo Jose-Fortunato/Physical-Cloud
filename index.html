@@ -559,15 +559,25 @@
       input.click();
     });
 
-    // FASE 1: handler do modo blob (avisa o usuário quando o picker não está disponível)
+       // Bloco D / Bug #1: mensagem neutra sobre blob, sem citar pasta nem
+    // gerenciador. O destino depende do sistema operacional e das
+    // configurações de download do usuário.
     window.addEventListener("physicalcloud:modo-salvamento-blob", (ev) => {
       const { totalArquivos } = ev.detail || {};
-      const msg = ehAndroid()
-        ? `Recebendo ${totalArquivos} arquivo(s) na pasta Downloads do navegador.`
-        : `Salvando ${totalArquivos} arquivo(s) via download do navegador.`;
+      const msg = totalArquivos === 1
+        ? "Salvando 1 arquivo pelo navegador."
+        : `Salvando ${totalArquivos} arquivos pelo navegador.`;
       window.PhysicalCloud?.aviso?.(msg);
     });
 
+    // Bloco D / Bug #1: falha de download (raro, mas honesto reportar).
+    window.addEventListener("physicalcloud:download-falhou", (ev) => {
+      const { motivo, nome } = ev.detail || {};
+      const prefixo = nome ? `[${nome}] ` : "";
+      window.PhysicalCloud?.aviso?.(
+        prefixo + (motivo || "Não foi possível salvar o arquivo. Verifique as configurações de download do navegador.")
+      );
+    });
 //<!-- ═══ FIM DA PARTE 1/3 ═══ -->
     // ═══ INÍCIO DA PARTE 2/3 ═══
 
