@@ -31,6 +31,7 @@
       </nav>
 
       <button class="nav-item" id="btn-abrir-feedback">★ Avaliar o App</button>
+                 <button class="nav-item" id="btn-abrir-app-futuro">📱 Versão App - Funcionalidades extras e vantagens</button>
     </aside>
 
     <main class="content">
@@ -221,7 +222,25 @@
       </div>
     </div>
   </div>
-
+    <!-- Modal de Funcionalidades e vantagens -->
+    <!-- Modal da Versão App (roadmap / vantagens do app sobre o site) -->
+  <div class="modal-overlay" id="modal-app-futuro">
+    <div class="modal-box" style="text-align: left; max-width: 560px; max-height: 85vh; display: flex; flex-direction: column;">
+      <button class="modal-close" id="btn-fechar-app-futuro">&times;</button>
+      <h2>O que vem no App</h2>
+      <p class="subtitle" style="margin-bottom: 16px;">
+        O Physical Cloud já funciona no navegador, sem instalação. O app nativo vai resolver o que o navegador não permite — com as vantagens reais que o sistema operacional oferece a um aplicativo instalado.
+      </p>
+      <div style="background: rgba(57,255,143,0.08); border: 1px solid rgba(57,255,143,0.3); border-radius: 8px; padding: 10px 12px; margin-bottom: 16px; font-size: 13px; color: #c9ffd9; line-height: 1.5;">
+        A versão web continua funcionando. Estes recursos extras são exclusivos do app.
+      </div>
+      <div id="lista-app-futuro" style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; padding-right: 4px;"></div>
+      <p style="font-size: 12px; color: #9a9a9a; margin-bottom: 16px; text-align: left; line-height: 1.5;">
+        O funcionamento em segundo plano depende das configurações do sistema operacional e do fabricante do celular. O app melhora muito esse comportamento, mas não elimina as regras de bateria de cada Android.
+      </p>
+      <button class="primary-btn" id="btn-app-futuro-ok" style="align-self: flex-end;">Entendi</button>
+    </div>
+  </div>
   <button class="btn-tornar-servidor" id="btn-tornar-servidor">Se tornar o dispositivo servidor</button>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
@@ -841,7 +860,7 @@
       }
     }
 
-    function finalizarCartaoOperacao(operacaoId, resultado) {
+        function finalizarCartaoOperacao(operacaoId, resultado) {
       const ui = operacoesUI.get(operacaoId);
       if (!ui || ui.finalizado) return;
       ui.finalizado = true;
@@ -852,8 +871,13 @@
       const cancelada = !!resultado.cancelada;
       const recusada = !!resultado.recusada;
       const comErro = (resultado.arquivosComErro || 0) > 0;
+      const motivo = resultado.motivo || "";
+      const conexaoPerdida = motivo === "conexao-perdida";
 
-      if (cancelada) {
+      if (conexaoPerdida) {
+        ui.status.textContent = "Interrompida — conexão perdida.";
+        ui.status.style.color = "#ff6b6b";
+      } else if (cancelada) {
         ui.status.textContent = "Cancelada.";
         ui.status.style.color = "#ff6b6b";
       } else if (recusada) {
@@ -983,8 +1007,11 @@
     window.addEventListener("physicalcloud:operacao-recusada", (ev) => {
       finalizarCartaoOperacao(ev.detail.operacaoId, { recusada: true });
     });
-    window.addEventListener("physicalcloud:operacao-cancelada", (ev) => {
-      finalizarCartaoOperacao(ev.detail.operacaoId, { cancelada: true });
+       window.addEventListener("physicalcloud:operacao-cancelada", (ev) => {
+      finalizarCartaoOperacao(ev.detail.operacaoId, {
+        cancelada: true,
+        motivo: ev.detail.motivo || "",
+      });
     });
 
     // Erro em arquivo — conta arquivosErro no cartão correspondente
@@ -1014,7 +1041,71 @@
         if (!aindaAtiva) finalizarCartaoOperacao(opId, { cancelada: true });
       }
     });
+    // ─── Modal da Versão App: recursos exclusivos do app e vantagens
+    // sobre a versão web ─────────────────────────────────────────────────
+    const RECURSOS_APP = [
+      {
+        titulo: "Receber com a tela desligada",
+        desc: "O app roda em segundo plano como serviço do sistema, então pode continuar disponível para receber mesmo com o celular bloqueado. O navegador pode ser suspenso pelo Android a qualquer momento.",
+      },
+      {
+        titulo: "Aceite automático de verdade",
+        desc: "Sem clique em cada operação. Você autoriza uma vez um dispositivo de confiança e o app aceita as transferências dele sozinho — o navegador exige um gesto seu.",
+      },
+      {
+        titulo: "Pasta de destino fixa",
+        desc: "Escolhe uma pasta uma única vez e o app salva tudo automaticamente nela. No navegador você escolhe o destino a cada operação.",
+      },
+      {
+        titulo: "Notificações reais com ação",
+        desc: "O app avisa quando alguém quer enviar algo e permite aceitar direto na notificação. Notificações do navegador são limitadas e frequentemente agrupadas ou atrasadas.",
+      },
+      {
+        titulo: "Integração com o gerenciador de arquivos",
+        desc: "O app abre direto no seu gerenciador de arquivos preferido, em qualquer pasta. O navegador só abre o seletor genérico do sistema.",
+      },
+      {
+        titulo: "Sincronização entre dispositivos",
+        desc: "Conta opcional para manter seus dispositivos e preferências iguais no PC e no celular. Na versão web, cada navegador tem seu próprio estado.",
+      },
+      {
+        titulo: "Iniciar com o celular",
+        desc: "O app pode se preparar para receber logo que o sistema liga. O navegador só começa a responder quando você abre a aba.",
+      },
+      {
+        titulo: "Mais permissões de arquivos",
+        desc: "O app pode ler e gravar em mais lugares do sistema do que o navegador permite, sempre respeitando o que você autorizar.",
+      },
+    ];
 
+    function popularRecursosApp() {
+      const lista = $("lista-app-futuro");
+      if (!lista) return;
+      lista.innerHTML = "";
+      for (const r of RECURSOS_APP) {
+        const item = document.createElement("div");
+        item.style.cssText = "background: #121212; border: 1px solid #2a2a2a; border-radius: 8px; padding: 12px 14px;";
+        const titulo = document.createElement("div");
+        titulo.style.cssText = "font-weight: 600; color: var(--accent); font-size: 14px; margin-bottom: 4px;";
+        titulo.textContent = "✓ " + r.titulo;
+        const desc = document.createElement("div");
+        desc.style.cssText = "font-size: 13px; color: #b8b8b8; line-height: 1.5;";
+        desc.textContent = r.desc;
+        item.append(titulo, desc);
+        lista.appendChild(item);
+      }
+    }
+
+    $("btn-abrir-app-futuro")?.addEventListener("click", () => {
+      popularRecursosApp();
+      $("modal-app-futuro").classList.add("active");
+    });
+    $("btn-fechar-app-futuro")?.addEventListener("click", () => {
+      $("modal-app-futuro").classList.remove("active");
+    });
+    $("btn-app-futuro-ok")?.addEventListener("click", () => {
+      $("modal-app-futuro").classList.remove("active");
+    });
     // ─── Inicialização ───
     atualizarEstadoNuvem();
     atualizarBotoesExplorador();

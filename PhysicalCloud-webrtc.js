@@ -1,4 +1,15 @@
 // @ts-check
+// PhysicalCloud-webrtc.js — Bloco A (bug #6: detecção de desconexão)
+//
+// Mudanças em relação à versão anterior:
+//  - TIMEOUT_DESCONEXAO_MS reduzido de 5000 para 2000
+//  - Novo evento physicalcloud:canal-fechado emitido uma única vez por
+//    sessão (via flag canalFechadoEmitido) em três gatilhos:
+//      1. dc.onclose (peer fechou o DataChannel)
+//      2. pc.connectionState === "failed" | "closed"
+//      3. timeout de "disconnected" expirado
+//  - transfer.js escuta esse evento para cancelar operações IMEDIATAMENTE
+//    (sem esperar o WebSocket de sinalização também cair)
 
 const STUN_SERVERS = [
     { urls: "stun:stun.l.google.com:19302" },
@@ -6,9 +17,20 @@ const STUN_SERVERS = [
 ];
 
 const NOME_CANAL = "physicalcloud";
+const TIMEOUT_DESCONEXAO_MS = 2000;
 
 /**
- * @typedef {{ pc: RTCPeerConnection, dc: RTCDataChannel | null, estado: string, sessaoId: string, candidatosPendentes: RTCIceCandidateInit[], descricaoRemotaDefinida: boolean, everConnected: boolean, timerDesconexao: ReturnType<typeof setTimeout> | null }} EntradaPeer
+ * @typedef {{
+ *   pc: RTCPeerConnection,
+ *   dc: RTCDataChannel | null,
+ *   estado: string,
+ *   sessaoId: string,
+ *   candidatosPendentes: RTCIceCandidateInit[],
+ *   descricaoRemotaDefinida: boolean,
+ *   everConnected: boolean,
+ *   timerDesconexao: ReturnType<typeof setTimeout> | null,
+ *   canalFechadoEmitido: boolean
+ * }} EntradaPeer
  */
 
 /** @type {Map<string, EntradaPeer>} */
@@ -36,6 +58,21 @@ function atualizarEstadoPeer(sessaoId, estado) {
     const entrada = peers.get(sessaoId);
     if (entrada) entrada.estado = estado;
     window.dispatchEvent(new CustomEvent("physicalcloud:peer-estado", { detail: { sessaoId, estado } }));
+}
+
+/**
+ * Emite physicalcloud:canal-fechado uma única vez por sessão.
+ * @param {string} sessaoId
+ * @param {string} motivo  "canal-fechado" | "conexao-perdida" | "conexao-nao-estabelecida"
+ */
+function emitirCanalFechado(sessaoId, motivo) {
+    const entrada = peers.get(sessaoId);
+    if (!entrada) return;
+    if (entrada.canalFechadoEmitido) return;
+    entrada.canalFechadoEmitido = true;
+    window.dispatchEvent(new CustomEvent("physicalcloud:canal-fechado", {
+        detail: { sessaoId, motivo },
+    }));
 }
 
 /** @param {string} sessaoId */
@@ -69,8 +106,6 @@ async function processarCandidatosPendentes(entrada) {
 }
 
 /**
- * [Fix.4/C5] Consulta getStats() para confirmar tipo de conexão (host/srflx/relay).
- * Retorna o candidateType do par nomeado vencedor, ou "desconhecido"/"erro".
  * @param {RTCPeerConnection} pc
  * @returns {Promise<string>}
  */
@@ -113,25 +148,22 @@ function configurarPc(pc, sessaoId) {
         const estado = pc.connectionState;
         atualizarEstadoPeer(sessaoId, estado);
 
-        // CORREÇÃO: Trata "disconnected" como estado transitório
         if (estado === "disconnected") {
             const entrada = peers.get(sessaoId);
             if (entrada && !entrada.timerDesconexao) {
                 entrada.timerDesconexao = setTimeout(() => {
                     const ent = peers.get(sessaoId);
                     if (ent && ent.estado === "disconnected") {
-                        // Só fecha se após 5s ainda estiver disconnected
                         const estavaConectado = !!(ent && ent.everConnected);
+                        const motivo = estavaConectado ? "conexao-perdida" : "conexao-nao-estabelecida";
+                        emitirCanalFechado(sessaoId, motivo);
                         fecharPeer(sessaoId);
                         window.dispatchEvent(new CustomEvent("physicalcloud:aviso-local", {
-                            detail: {
-                                sessaoId,
-                                motivo: estavaConectado ? "conexao-perdida" : "conexao-nao-estabelecida",
-                            },
+                            detail: { sessaoId, motivo },
                         }));
                         api.encerrarSessao(sessaoId);
                     }
-                }, 5000);
+                }, TIMEOUT_DESCONEXAO_MS);
             }
             return;
         }
@@ -144,13 +176,12 @@ function configurarPc(pc, sessaoId) {
             }
             const estavaConectado = !!(entrada && entrada.everConnected);
             const sessaoExiste = peers.has(sessaoId);
+            const motivo = estavaConectado ? "conexao-perdida" : "conexao-nao-estabelecida";
+            emitirCanalFechado(sessaoId, motivo);
             fecharPeer(sessaoId);
             if (sessaoExiste) {
                 window.dispatchEvent(new CustomEvent("physicalcloud:aviso-local", {
-                    detail: {
-                        sessaoId,
-                        motivo: estavaConectado ? "conexao-perdida" : "conexao-nao-estabelecida",
-                    },
+                    detail: { sessaoId, motivo },
                 }));
                 api.encerrarSessao(sessaoId);
             }
@@ -165,7 +196,6 @@ function configurarPc(pc, sessaoId) {
 function configurarDc(dc, sessaoId) {
     const entrada = peers.get(sessaoId);
     if (entrada) {
-        // CORREÇÃO: Evita configurar o mesmo canal duas vezes
         if (entrada.dc === dc) return;
         entrada.dc = dc;
     }
@@ -223,6 +253,7 @@ function configurarDc(dc, sessaoId) {
 
     dc.onclose = () => {
         atualizarEstadoPeer(sessaoId, "canal-fechado");
+        emitirCanalFechado(sessaoId, "canal-fechado");
     };
 
     dc.onerror = (event) => {
@@ -232,7 +263,6 @@ function configurarDc(dc, sessaoId) {
 }
 
 /**
- * Esta ponta é o CLIENTE.
  * @param {string} sessaoId
  */
 async function iniciarComoCliente(sessaoId) {
@@ -240,7 +270,12 @@ async function iniciarComoCliente(sessaoId) {
 
     const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
     /** @type {EntradaPeer} */
-    const entrada = { pc, dc: null, estado: "iniciando", sessaoId, candidatosPendentes: [], descricaoRemotaDefinida: false, everConnected: false, timerDesconexao: null };
+    const entrada = {
+        pc, dc: null, estado: "iniciando", sessaoId,
+        candidatosPendentes: [], descricaoRemotaDefinida: false,
+        everConnected: false, timerDesconexao: null,
+        canalFechadoEmitido: false,
+    };
     peers.set(sessaoId, entrada);
 
     configurarPc(pc, sessaoId);
@@ -260,7 +295,6 @@ async function iniciarComoCliente(sessaoId) {
 }
 
 /**
- * Esta ponta é o SERVIDOR.
  * @param {string} sessaoId
  */
 function prepararComoServidor(sessaoId) {
@@ -268,7 +302,12 @@ function prepararComoServidor(sessaoId) {
 
     const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
     /** @type {EntradaPeer} */
-    const entrada = { pc, dc: null, estado: "aguardando-offer", sessaoId, candidatosPendentes: [], descricaoRemotaDefinida: false, everConnected: false, timerDesconexao: null };
+    const entrada = {
+        pc, dc: null, estado: "aguardando-offer", sessaoId,
+        candidatosPendentes: [], descricaoRemotaDefinida: false,
+        everConnected: false, timerDesconexao: null,
+        canalFechadoEmitido: false,
+    };
     peers.set(sessaoId, entrada);
 
     configurarPc(pc, sessaoId);
@@ -312,7 +351,6 @@ async function processarSinal(sessaoId, dados) {
             await pc.setRemoteDescription({ type: "answer", sdp: dados.sdp });
             entrada.descricaoRemotaDefinida = true;
             await processarCandidatosPendentes(entrada);
-
             atualizarEstadoPeer(sessaoId, "conectando");
         } catch (e) {
             console.error("Falha ao processar answer:", e);
@@ -336,7 +374,7 @@ async function processarSinal(sessaoId, dados) {
     }
 }
 
-// ─── Escuta eventos emitidos pelo PhysicalCloud.js ────────────────────────────
+// ─── Escuta eventos emitidos pelo PhysicalCloud.js ─────────────────────────
 
 window.addEventListener("physicalcloud:sinal", (event) => {
     const { sessaoId, dados } = /** @type {CustomEvent} */ (event).detail;
@@ -355,7 +393,7 @@ window.addEventListener("physicalcloud:sessao-encerrada", (event) => {
     fecharPeer(String(sessaoId));
 });
 
-// ─── API pública ──────────────────────────────────────────────────────────────
+// ─── API pública ───────────────────────────────────────────────────────────
 
 api.peers = peers;
 api.fecharPeer = fecharPeer;

@@ -838,11 +838,12 @@ async function tratarMensagemJson(sessaoId, msg, dc) {
             resolverDecisaoOperacao(msg.operacaoId, "refused");
             break;
 
-        case "operation-cancel": {
-            const op = operacoes.get(msg.operacaoId);
-            if (op) {
-                op.recusada = true;
-                const sessaoLocal = op.sessaoId;
+                case "operation-cancel": {
+            // Emissor: já era tratado antes (mantido).
+            const opEmissor = operacoes.get(msg.operacaoId);
+            if (opEmissor) {
+                opEmissor.recusada = true;
+                const sessaoLocal = opEmissor.sessaoId;
                 const fila = filas.get(sessaoLocal);
                 if (fila) {
                     for (let i = fila.length - 1; i >= 0; i--) {
@@ -861,8 +862,41 @@ async function tratarMensagemJson(sessaoId, msg, dc) {
                     }
                 }
                 operacoes.delete(msg.operacaoId);
-                emitir("physicalcloud:operacao-cancelada", { operacaoId: msg.operacaoId, sessaoId: sessaoLocal, direcao: "envio" });
+                emitir("physicalcloud:operacao-cancelada", {
+                    operacaoId: msg.operacaoId, sessaoId: sessaoLocal,
+                    direcao: "envio", motivo: "remoto",
+                });
                 processarFila(sessaoLocal);
+            }
+
+            // Receptor — NOVO. Era o que faltava para o bug #4.
+            // Aborta writers em voo (evita arquivo 0 KB no destino) e
+            // atualiza a UI com operacao-cancelada.
+            const opReceptor = ofertasOperacoes.get(msg.operacaoId);
+            if (opReceptor) {
+                opReceptor.recusada = true;
+                for (const [sid, rec] of Array.from(recebimentos.entries())) {
+                    if (rec.operacaoId === msg.operacaoId) {
+                        if (rec.writerHandle) {
+                            try { await rec.writerHandle.abort(); } catch {}
+                        }
+                        recebimentos.delete(sid);
+                        ativasRecebimento.delete(sid);
+                        emitir("physicalcloud:transfer-cancelado", { transferId: rec.transferId, sessaoId: sid });
+                    }
+                }
+                for (const [tid, o] of Array.from(ofertasPendentes.entries())) {
+                    if (o.operacaoId === msg.operacaoId) {
+                        ofertasPendentes.delete(tid);
+                    }
+                }
+                emitir("physicalcloud:operacao-cancelada", {
+                    operacaoId: msg.operacaoId,
+                    sessaoId: opReceptor.sessaoId,
+                    direcao: "recebimento",
+                    motivo: "remoto",
+                });
+                ofertasOperacoes.delete(msg.operacaoId);
             }
             break;
         }
@@ -1095,17 +1129,20 @@ window.addEventListener("physicalcloud:sessao-encerrada", (event) => {
         if (oferta.sessaoId === sessaoId) ofertasPendentes.delete(tid);
     }
 
-    // FASE 1 / Bug #15: limpa operações órfãs emitindo operacao-cancelada
-    for (const [opId, op] of Array.from(operacoes.entries())) {
+        for (const [opId, op] of Array.from(operacoes.entries())) {
         if (op.sessaoId === sessaoId) {
             operacoes.delete(opId);
-            emitir("physicalcloud:operacao-cancelada", { operacaoId: opId, sessaoId, direcao: "envio" });
+            emitir("physicalcloud:operacao-cancelada", {
+                operacaoId: opId, sessaoId, direcao: "envio", motivo: "conexao-perdida",
+            });
         }
     }
     for (const [opId, op] of Array.from(ofertasOperacoes.entries())) {
         if (op.sessaoId === sessaoId) {
             ofertasOperacoes.delete(opId);
-            emitir("physicalcloud:operacao-cancelada", { operacaoId: opId, sessaoId, direcao: "recebimento" });
+            emitir("physicalcloud:operacao-cancelada", {
+                operacaoId: opId, sessaoId, direcao: "recebimento", motivo: "conexao-perdida",
+            });
         }
     }
 
@@ -1132,7 +1169,66 @@ window.addEventListener("physicalcloud:sessao-encerrada", (event) => {
         emitir("physicalcloud:transfer-cancelado", { transferId: tidRec, sessaoId });
     }
 });
+// Bloco A / Bug #6: cancelamento imediato ao detectar queda de canal.
+// O webrtc.js emite physicalcloud:canal-fechado assim que detecta
+// DataChannel fechado, pc.failed/closed ou timeout de "disconnected".
+// Aqui cancelamos TODAS as operações da sessão sem esperar o WebSocket.
+window.addEventListener("physicalcloud:canal-fechado", (event) => {
+    const { sessaoId, motivo } = /** @type {CustomEvent} */ (event).detail || {};
+    if (!sessaoId) return;
+    const motivoFinal = motivo === "canal-fechado" ? "conexao-perdida" : (motivo || "conexao-perdida");
 
+    // Cancela envios em progresso e na fila
+    for (const [opId, op] of Array.from(operacoes.entries())) {
+        if (op.sessaoId !== sessaoId) continue;
+        op.recusada = true;
+        operacoes.delete(opId);
+        emitir("physicalcloud:operacao-cancelada", {
+            operacaoId: opId, sessaoId, direcao: "envio", motivo: motivoFinal,
+        });
+    }
+
+    // Cancela recebimentos aguardando autorização
+    for (const [opId, op] of Array.from(ofertasOperacoes.entries())) {
+        if (op.sessaoId !== sessaoId) continue;
+        op.recusada = true;
+        ofertasOperacoes.delete(opId);
+        emitir("physicalcloud:operacao-cancelada", {
+            operacaoId: opId, sessaoId, direcao: "recebimento", motivo: motivoFinal,
+        });
+    }
+
+    // Aborta writers ativos (arquivos parciais viram lixo descartado)
+    for (const [sid, rec] of Array.from(recebimentos.entries())) {
+        if (sid !== sessaoId) continue;
+        if (rec.writerHandle) {
+            try { rec.writerHandle.abort(); } catch {}
+        }
+        recebimentos.delete(sid);
+        ativasRecebimento.delete(sid);
+        emitir("physicalcloud:transfer-cancelado", { transferId: rec.transferId, sessaoId: sid });
+    }
+
+    // Cancela envio binário ativo
+    const tidEnvio = ativasEnvio.get(sessaoId);
+    if (tidEnvio) {
+        const e = transferencias.get(tidEnvio);
+        if (e) {
+            e.estado = "cancelado";
+            if (e.cancelarPausa) e.cancelarPausa();
+            emitirCancelamento(e, sessaoId);
+        }
+        transferencias.delete(tidEnvio);
+        ativasEnvio.delete(sessaoId);
+    }
+
+    // Limpa tudo o mais da sessão
+    filas.delete(sessaoId);
+    limparPullsAguardando(sessaoId);
+    for (const [tid, o] of Array.from(ofertasPendentes.entries())) {
+        if (o.sessaoId === sessaoId) ofertasPendentes.delete(tid);
+    }
+});
 // ─── Input file global (compatibilidade com evento legado) ───
 
 window.addEventListener("physicalcloud:solicitar-envio", () => {
