@@ -933,4 +933,48 @@ body {
   margin-left: 24px;
   margin-top: -4px;
   line-height: 1.4;
+}/* ─── Fase 1: Edição de Nome e Dispositivos Conhecidos ─────────────────── */
+
+.device-btn-rename {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.device-btn-rename:hover {
+  background: var(--bg-hover);
+  color: var(--text-main);
+}
+
+/* Card de dispositivo já pareado (um pouco mais apagado) */
+.known-card {
+  background: #111;
+  border-color: #222;
+  opacity: 0.9;
+}
+
+.known-card .device-name {
+  font-size: 14px;
+  color: #ccc;
+}
+
+.known-card .device-details {
+  color: #666;
+}
+
+/* Botão Reconectar no card de conhecidos */
+.known-card .primary-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* Input do modal de edição */
+#input-editar-nome:focus {
+  border-color: var(--accent);
 }

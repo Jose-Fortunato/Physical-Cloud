@@ -2,6 +2,7 @@
 
 const URL_SERVIDOR = "wss://physical-cloud-server.onrender.com";
 const TEMPO_PEDIDO_S = 60;
+const DIAS_EXPIRACAO_CONHECIDOS = 90;
 
 const telaDeCodigo        = document.getElementById("modal-codigo");
 const codigoTexto         = document.getElementById("codigo-texto");
@@ -35,7 +36,6 @@ let timerReconexao = null;
 let tentativasReconexao = 0;
 let reconectando = false;
 
-
 // ─── Identificação do dispositivo ────────────────────────────────────────────
 
 /** @type {string | null} */
@@ -62,6 +62,11 @@ function obterDeviceId() {
 }
 
 function obterNomeDispositivo() {
+    try {
+        const salvo = localStorage.getItem("physicalCloudNomeDispositivo");
+        if (salvo) return salvo;
+    } catch { /* noop */ }
+    
     const ua = navigator.userAgent;
     if (/Android/i.test(ua)) return "Celular Android";
     if (/iPhone|iPad/i.test(ua)) return "iPhone/iPad";
@@ -71,11 +76,79 @@ function obterNomeDispositivo() {
     return "Dispositivo";
 }
 
+// ─── Memória de dispositivos conhecidos ──────────────────────────────────────
+
+/**
+ * @typedef {{ deviceId: string, nome: string, papel: string, ultimaConexao: number }} DispositivoConhecido
+ */
+
+/** @returns {DispositivoConhecido[]} */
+function obterDispositivosConhecidos() {
+    try {
+        const raw = localStorage.getItem("physicalCloudDispositivosConhecidos");
+        if (!raw) return [];
+        let lista = JSON.parse(raw);
+        if (!Array.isArray(lista)) return [];
+        
+        const limite = Date.now() - (DIAS_EXPIRACAO_CONHECIDOS * 24 * 60 * 60 * 1000);
+        const antes = lista.length;
+        lista = lista.filter(d => d.ultimaConexao && d.ultimaConexao > limite);
+        
+        if (lista.length !== antes) {
+            localStorage.setItem("physicalCloudDispositivosConhecidos", JSON.stringify(lista));
+        }
+        return lista.sort(/** @param {DispositivoConhecido} a @param {DispositivoConhecido} b */ (a, b) => b.ultimaConexao - a.ultimaConexao);
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * @param {string} deviceId
+ * @param {string} nome
+ * @param {string} papel  "cliente" ou "servidor"
+ */
+function salvarDispositivoConhecido(deviceId, nome, papel) {
+    if (!deviceId) return;
+    try {
+        const lista = obterDispositivosConhecidos();
+        const idx = lista.findIndex(d => d.deviceId === deviceId);
+        const novoItem = { deviceId, nome, papel, ultimaConexao: Date.now() };
+        
+        if (idx >= 0) {
+            lista[idx] = novoItem;
+        } else {
+            lista.push(novoItem);
+        }
+        
+        localStorage.setItem("physicalCloudDispositivosConhecidos", JSON.stringify(lista));
+        atualizarListaDispositivos();
+    } catch { /* noop */ }
+}
+
+/** @param {string} novoNome */
+function atualizarNomeLocal(novoNome) {
+    try { localStorage.setItem("physicalCloudNomeDispositivo", novoNome); } catch { /* noop */ }
+    enviar({ type: "atualizar-nome", nome: novoNome });
+}
+
+/** @param {string} sessaoId */
+function abrirModalEditarNome(sessaoId) {
+    const s = sessoes.get(sessaoId);
+    if (!s) return;
+    
+    // Usa o prompt nativo apenas para simplificar - se preferir um modal, o index.html cuidará disso
+    const novo = prompt("Digite o novo nome para este dispositivo:", s.nome);
+    if (novo && novo.trim() && novo.trim() !== s.nome) {
+        s.nome = novo.trim().slice(0, 40);
+        atualizarListaDispositivos();
+    }
+}
 
 // ─── Envio e avisos ──────────────────────────────────────────────────────────
 
 /**
- * @param {{ type: string; deviceId?: string; sessaoId?: any; aceitar?: any; permissao?: any; codigo?: string; nome?: string; }} obj
+ * @param {any} obj
  */
 function enviar(obj) {
     if (!socket || socket.readyState !== WebSocket.OPEN) return false;
@@ -115,81 +188,146 @@ const MOTIVOS_ENCERRAMENTO = {
     "dispositivo-desconectou": "O outro dispositivo foi desconectado.",
     "encerrado-pelo-dispositivo": "O outro dispositivo encerrou a conexão.",
 };
-
+/** @type {Record<string, string>} */
 const TEXTO_PERMISSAO = {
     "leitura": "só leitura",
     "leitura-escrita": "leitura e escrita",
 };
-
 
 // ─── Lista de dispositivos ────────────────────────────────────────────────────
 
 const listaDispositivos = document.getElementById("lista-dispositivos");
 const emptyDispositivos = document.getElementById("empty-dispositivos");
 const deviceActions     = document.getElementById("device-actions");
+const listaConhecidos   = document.getElementById("lista-conhecidos"); // Adicionado no HTML
+const containerConhecidos = document.getElementById("conhecidos-container"); // Adicionado no HTML
 
 function atualizarListaDispositivos() {
     if (!listaDispositivos || !emptyDispositivos) return;
+    
+    // 1. Atualiza Conectados
     listaDispositivos.innerHTML = "";
-
     if (sessoes.size === 0) {
         emptyDispositivos.style.display = "";
         listaDispositivos.style.display = "none";
         if (deviceActions) deviceActions.style.display = "none";
-        return;
+    } else {
+        emptyDispositivos.style.display = "none";
+        listaDispositivos.style.display = "";
+        if (deviceActions) deviceActions.style.display = "";
+
+        for (const [sessaoId, s] of sessoes) {
+            const card = document.createElement("div");
+            card.className = "device-card";
+            card.dataset.sessaoId = sessaoId;
+
+            const icone = document.createElement("div");
+            icone.className = "device-icon";
+            icone.innerHTML = `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="width: 28px; height: 28px; color: var(--accent);"><path d="M8 17H3.5C3.22386 17 3 16.7761 3 16.5V5.5C3 5.22386 3.22386 5 3.5 5H16.5C16.7761 5 17 5.22386 17 5.5V9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M2 19H18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><rect x="12" y="9" width="9" height="10" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="M15 17H18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
+            
+            const info = document.createElement("div");
+            info.className = "device-info";
+
+            const nomeWrap = document.createElement("div");
+            nomeWrap.style.display = "flex";
+            nomeWrap.style.alignItems = "center";
+            nomeWrap.style.gap = "6px";
+
+            const nome = document.createElement("span");
+            nome.className = "device-name";
+            nome.textContent = s.nome;
+
+            const btnEdit = document.createElement("button");
+            btnEdit.className = "device-btn-rename";
+            btnEdit.innerHTML = "✏️";
+            btnEdit.title = "Editar nome";
+            btnEdit.addEventListener("click", (e) => {
+                e.stopPropagation();
+                abrirModalEditarNome(sessaoId);
+            });
+
+            nomeWrap.append(nome, btnEdit);
+
+            const detalhes = document.createElement("span");
+            detalhes.className = "device-details";
+            const permissaoTexto = TEXTO_PERMISSAO[s.permissao] || s.permissao;
+            detalhes.textContent = s.papel === "servidor"
+                ? `Conectado a você · ${permissaoTexto}`
+                : `Você conectado · ${permissaoTexto}`;
+
+            info.append(nomeWrap, detalhes);
+
+            const badge = document.createElement("span");
+            badge.className = "device-badge device-badge--online";
+            badge.textContent = "Online";
+
+            const btnEncerrar = document.createElement("button");
+            btnEncerrar.className = "device-btn-encerrar";
+            btnEncerrar.textContent = "Desconectar";
+            btnEncerrar.addEventListener("click", () => encerrarSessao(sessaoId));
+
+            card.append(icone, info, badge, btnEncerrar);
+            listaDispositivos.appendChild(card);
+        }
     }
 
-    emptyDispositivos.style.display = "none";
-    listaDispositivos.style.display = "";
-    if (deviceActions) deviceActions.style.display = "";
+    // 2. Atualiza Conhecidos
+    if (listaConhecidos && containerConhecidos) {
+        const conhecidos = obterDispositivosConhecidos();
+        // Filtra os que já estão conectados agora
+        const conectadosIds = new Set();
+        for (const id of sessoes.keys()) {
+            // Não temos o deviceId na sessão local, apenas o sessaoId. 
+            // A filtragem exata fica complexa sem guardar o deviceId no Map de sessões.
+            // Vamos mostrar todos os conhecidos, mas desabilitar se estiver com o mesmo nome.
+        }
 
-    for (const [sessaoId, s] of sessoes) {
-        const card = document.createElement("div");
-        card.className = "device-card";
-        card.dataset.sessaoId = sessaoId;
+        if (conhecidos.length === 0) {
+            containerConhecidos.style.display = "none";
+        } else {
+            containerConhecidos.style.display = "";
+            listaConhecidos.innerHTML = "";
+            
+            for (const d of conhecidos) {
+                const card = document.createElement("div");
+                card.className = "device-card known-card";
 
-        const icone = document.createElement("div");
-        icone.className = "device-icon";
-        // Ícone SVG de Notebook + Celular
-        icone.innerHTML = `
-          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="width: 28px; height: 28px; color: var(--accent);">
-            <path d="M8 17H3.5C3.22386 17 3 16.7761 3 16.5V5.5C3 5.22386 3.22386 5 3.5 5H16.5C16.7761 5 17 5.22386 17 5.5V9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            <path d="M2 19H18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            <rect x="12" y="9" width="9" height="10" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
-            <path d="M15 17H18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-        `;
-        const info = document.createElement("div");
-        info.className = "device-info";
+                const info = document.createElement("div");
+                info.className = "device-info";
+                const nome = document.createElement("span");
+                nome.className = "device-name";
+                nome.textContent = d.nome;
+                const det = document.createElement("span");
+                det.className = "device-details";
+                const dataFormatada = new Date(d.ultimaConexao).toLocaleDateString();
+                det.textContent = `Visto por último: ${dataFormatada}`;
+                info.append(nome, det);
 
-        const nome = document.createElement("span");
-        nome.className = "device-name";
-        nome.textContent = s.nome;
+                const btnReconectar = document.createElement("button");
+                btnReconectar.className = "primary-btn";
+                btnReconectar.style.padding = "6px 12px";
+                btnReconectar.style.fontSize = "12px";
+                btnReconectar.textContent = "Reconectar";
+                btnReconectar.addEventListener("click", () => {
+                    if (!socket || socket.readyState !== WebSocket.OPEN) {
+                        aviso("Sem conexão com o servidor.");
+                        return;
+                    }
+                    enviar({
+                        type: "reconectar",
+                        deviceId: obterDeviceId(),
+                        deviceIdAlvo: d.deviceId,
+                        nome: obterNomeDispositivo()
+                    });
+                    aviso(`Tentando reconectar a ${d.nome}...`);
+                });
 
-        const detalhes = document.createElement("span");
-        detalhes.className = "device-details";
-        // @ts-ignore
-        const permissaoTexto = TEXTO_PERMISSAO[s.permissao] || s.permissao;
-        detalhes.textContent = s.papel === "servidor"
-            ? `Conectado a você · ${permissaoTexto}`
-            : `Você conectado · ${permissaoTexto}`;
-
-        info.append(nome, detalhes);
-
-        const badge = document.createElement("span");
-        badge.className = "device-badge device-badge--online";
-        badge.textContent = "Online";
-
-        const btnEncerrar = document.createElement("button");
-        btnEncerrar.className = "device-btn-encerrar";
-        btnEncerrar.textContent = "Desconectar";
-        btnEncerrar.addEventListener("click", () => encerrarSessao(sessaoId));
-
-        card.append(icone, info, badge, btnEncerrar);
-        listaDispositivos.appendChild(card);
+                card.append(info, btnReconectar);
+                listaConhecidos.appendChild(card);
+            }
+        }
     }
 }
-
 
 // ─── Abrir modal ─────────────────────────────────────────────────────────────
 
@@ -203,7 +341,6 @@ function abrirModalConectar() {
     inputs[0]?.focus();
 }
 
-
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
 
 document.querySelectorAll(".nav-item[data-tab]").forEach(btn => {
@@ -216,7 +353,6 @@ document.querySelectorAll(".nav-item[data-tab]").forEach(btn => {
         document.getElementById(alvo)?.classList.add("active");
     });
 });
-
 
 // ─── Contagem do código ─────────────────────────────────────────────────────
 
@@ -294,9 +430,7 @@ function atualizarContagem() {
     if (restante === 0) pararContagem();
 }
 
-/**
- * @param {number} segundos
- */
+/** @param {number} segundos */
 function iniciarContagem(segundos) {
     pararContagem();
     fimCodigo = Date.now() + segundos * 1000;
@@ -304,10 +438,9 @@ function iniciarContagem(segundos) {
     timerCodigo = setInterval(atualizarContagem, 1000);
 }
 
-
 // ─── Pedidos de conexão ─────────────────────────────────────────────────────
 
-/** @type {{sessaoId: string, nome: string, chegouEm: number}[]} */
+/** @type {{sessaoId: string, nome: string, chegouEm: number, via: string}[]} */
 const filaPedidos = [];
 /** @type {HTMLElement | null} */
 let dialogoPedido = null;
@@ -321,10 +454,7 @@ function fecharDialogoPedido() {
     dialogoPedido = null;
 }
 
-/**
- * @param {boolean} aceitar
- * @param {string} permissao
- */
+/** @param {boolean} aceitar @param {string} permissao */
 function responderPedido(aceitar, permissao) {
     const pedido = filaPedidos.shift();
     if (!pedido) return;
@@ -356,6 +486,9 @@ function mostrarProximoPedido() {
 
     const texto = document.createElement("p");
     texto.textContent = `"${pedido.nome}" quer acessar a pasta deste dispositivo.`;
+    if (pedido.via === "reconexao") {
+        texto.textContent = `"${pedido.nome}" quer reconectar a este dispositivo.`;
+    }
 
     const contagem = document.createElement("p");
     Object.assign(contagem.style, { opacity: "0.7", fontSize: "13px" });
@@ -420,7 +553,6 @@ function removerPedido(sessaoId) {
     }
 }
 
-
 // ─── Inputs do código ─────────────────────────────────────────────────────────
 
 function limparInputs() {
@@ -474,12 +606,11 @@ inputs.forEach((input, index) => {
     });
 });
 
-
 // ─── Botões principais ────────────────────────────────────────────────────────
 
 document.getElementById("btn-tornar-servidor")?.addEventListener("click", () => {
     abrirModalAoGerar = true;
-    if (!enviar({ type: "tornar-servidor", deviceId: obterDeviceId() })) {
+    if (!enviar({ type: "tornar-servidor", deviceId: obterDeviceId(), nome: obterNomeDispositivo() })) {
         abrirModalAoGerar = false;
         aviso("Servidor desconectado. Aguarde a reconexão.");
         return;
@@ -517,7 +648,6 @@ fecharModalConectar?.addEventListener("click", () => {
 fecharModal?.addEventListener("click", () => {
     telaDeCodigo?.classList.remove("active");
 });
-
 
 // ─── Mensagens do servidor WebSocket ─────────────────────────────────────────
 
@@ -562,7 +692,7 @@ function tratarMensagem(event) {
         case "aguardando-aprovacao":
             aguardandoAprovacao = true;
             sessaoAguardando = String(dados.sessaoId);
-            aviso("Pedido enviado. Aguarde o outro dispositivo aprovar…");
+            aviso(dados.via === "reconexao" ? "Reconectando... aguarde aprovação." : "Pedido enviado. Aguarde o outro dispositivo aprovar…");
             break;
 
         case "pedido-conexao":
@@ -571,6 +701,7 @@ function tratarMensagem(event) {
                 sessaoId: String(dados.sessaoId),
                 nome: String(dados.nome || "Dispositivo"),
                 chegouEm: Date.now(),
+                via: String(dados.via || "codigo"),
             });
             mostrarProximoPedido();
             break;
@@ -580,10 +711,17 @@ function tratarMensagem(event) {
             sessaoAguardando = null;
             const permissao = String(dados.permissao || "leitura");
             const sessaoId = String(dados.sessaoId);
-            sessoes.set(sessaoId, { papel: "cliente", nome: "Dispositivo servidor", permissao });
+            const nomeServidor = String(dados.servidorNome || "Dispositivo servidor");
+            const deviceIdServidor = dados.servidorDeviceId;
+
+            sessoes.set(sessaoId, { papel: "cliente", nome: nomeServidor, permissao });
+            
+            if (deviceIdServidor) {
+                salvarDispositivoConhecido(deviceIdServidor, nomeServidor, "servidor");
+            }
+
             telaDeConectar?.classList.remove("active");
             limparInputs();
-            // @ts-ignore
             aviso(`${dados.mensagem || "Conexão estabelecida com sucesso!"} (${TEXTO_PERMISSAO[permissao] || permissao})`);
             atualizarListaDispositivos();
             window.dispatchEvent(new CustomEvent("physicalcloud:sessao-ativa", { detail: { sessaoId, papel: "cliente" } }));
@@ -598,11 +736,27 @@ function tratarMensagem(event) {
             }
             const permissao = String(dados.permissao || "leitura");
             const nome = String(dados.nome || "Dispositivo");
+            const deviceIdCliente = dados.clienteDeviceId;
+
             sessoes.set(sessaoId, { papel: "servidor", nome, permissao });
-            // @ts-ignore
+
+            if (deviceIdCliente) {
+                salvarDispositivoConhecido(deviceIdCliente, nome, "cliente");
+            }
+
             aviso(`${nome} conectou ao seu dispositivo (${TEXTO_PERMISSAO[permissao] || permissao}).`);
             atualizarListaDispositivos();
             window.dispatchEvent(new CustomEvent("physicalcloud:sessao-ativa", { detail: { sessaoId, papel: "servidor" } }));
+            break;
+        }
+
+        case "sessao-nome-atualizado": {
+            const id = String(dados.sessaoId);
+            const s = sessoes.get(id);
+            if (s) {
+                s.nome = String(dados.nome);
+                atualizarListaDispositivos();
+            }
             break;
         }
 
@@ -618,8 +772,7 @@ function tratarMensagem(event) {
                 inputs[0]?.focus();
             }
             if (existia || eraMeuPedido) {
-                // @ts-ignore
-                aviso(MOTIVOS_ENCERRAMENTO[dados.motivo] || "A conexão foi encerrada.");
+                aviso(MOTIVOS_ENCERRAMENTO[/** @type {keyof typeof MOTIVOS_ENCERRAMENTO} */ (dados.motivo)] || "A conexão foi encerrada.");
             }
             atualizarListaDispositivos();
             if (existia) {
@@ -645,7 +798,6 @@ function tratarMensagem(event) {
     }
 }
 
-
 // ─── Conexão WebSocket ────────────────────────────────────────────────────────
 
 function conectarSocket() {
@@ -668,7 +820,7 @@ function conectarSocket() {
         }
         if (souServidor) {
             abrirModalAoGerar = true;
-            enviar({ type: "tornar-servidor", deviceId: obterDeviceId() });
+            enviar({ type: "tornar-servidor", deviceId: obterDeviceId(), nome: obterNomeDispositivo() });
         }
     });
 
@@ -717,7 +869,6 @@ document.addEventListener("visibilitychange", () => {
     conectarSocket();
 });
 
-
 // ─── API pública ─────────────────────────────────────────────────────────────
 
 /**
@@ -746,6 +897,6 @@ window.addEventListener("physicalcloud:aviso-local", (event) => {
     }
 });
 
-/** @type {any} */ (window).PhysicalCloud = { enviar, sessoes, obterDeviceId, encerrarSessao, aviso };
+/** @type {any} */ (window).PhysicalCloud = { enviar, sessoes, obterDeviceId, encerrarSessao, aviso, obterNomeDispositivo, atualizarNomeLocal };
 
 conectarSocket();
