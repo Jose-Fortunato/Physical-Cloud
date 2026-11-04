@@ -198,7 +198,8 @@
         <option value="bug">Bug</option>
         <option value="outro">Outro</option>
       </select>
-      <textarea id="feedback-texto" rows="4" placeholder="Conte-nos mais (opcional)" style="width: 100%; background: #121212; color: #fff; border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 14px; resize: vertical; font-family: inherit;"></textarea>
+      <textarea id="feedback-texto" rows="4"  maxlength="2000" placeholder="Conte-nos mais (opcional)" style="width: 100%; background: #121212; color: #fff; border: 1px solid #2a2a2a; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 14px; resize: vertical; font-family: inherit;"></textarea>
+      <p id="feedback-contador" style="font-size: 11px; color: #6e6e6e; text-align: right; margin: -8px 0 12px;">0 / 2000</p>
       <p id="feedback-status" style="display: none; font-size: 13px; margin-bottom: 12px;"></p>
       <button class="primary-btn" id="btn-enviar-feedback">Enviar Feedback</button>
     </div>

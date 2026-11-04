@@ -16,8 +16,13 @@ document.addEventListener("DOMContentLoaded", () => {
     const btnEnviar = /** @type {HTMLButtonElement | null} */ (document.getElementById("btn-enviar-feedback"));
     const statusTexto = document.getElementById("feedback-status");
     const categoriaInput = document.getElementById("feedback-categoria");
-    const mensagemInput = document.getElementById("feedback-texto");
-
+    const mensagemInput = /** @type {HTMLInputElement | HTMLTextAreaElement | null} */ (document.getElementById("feedback-texto"));
+const contadorInput = document.getElementById("feedback-contador");
+if (mensagemInput && contadorInput) {
+    mensagemInput.addEventListener("input", () => {
+        contadorInput.textContent = `${mensagemInput.value.length} / 2000`;
+    });
+}
     if (!btnAbrir || !modal || !btnFechar || !btnEnviar || !statusTexto ||
         !(categoriaInput instanceof HTMLSelectElement) ||
         (!(mensagemInput instanceof HTMLInputElement) && !(mensagemInput instanceof HTMLTextAreaElement))) {
@@ -74,6 +79,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const categoria = categoriaInput.value;
         const mensagem = mensagemInput.value.trim();
+        if (mensagem.length > 2000) {
+    alert(`Mensagem muito grande (${mensagem.length} caracteres). Reduza para até 2000.`);
+    return;
+}
 
         btnEnviar.disabled = true;
         btnEnviar.textContent = "Enviando...";
@@ -81,22 +90,39 @@ document.addEventListener("DOMContentLoaded", () => {
         statusTexto.style.color = "#9a9a9a";
         statusTexto.textContent = "Enviando feedback...";
 
-        try {
-            const { data, error } = await _supabase
-                .from("feedback")
-                .insert([
-                    { 
-                        rating: notaAtual, 
-                        categoria: categoria, 
-                        mensagem: mensagem, 
-                        source: "web" 
-                    }
-                ]);
+       try {
+    const resposta = await fetch(
+        `${SUPABASE_URL}/functions/v1/enviar-feedback`,
+        {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${SUPABASE_KEY}`,
+            },
+            body: JSON.stringify({
+                rating: notaAtual,
+                categoria,
+                mensagem,
+            }),
+        }
+    );
 
-            if (error) throw error;
+    const dados = await resposta.json().catch(() => ({}));
 
-            statusTexto.style.color = "var(--accent)";
-            statusTexto.textContent = "Feedback enviado com sucesso! Obrigado.";
+    if (resposta.status === 429) {
+        statusTexto.style.color = "#ffd280";
+        statusTexto.textContent = dados.erro || "Limite diário atingido. Tente amanhã.";
+        return;
+    }
+
+    if (!resposta.ok) {
+        throw new Error(dados.erro || `Erro ${resposta.status}`);
+    }
+
+    statusTexto.style.color = "var(--accent)";
+    statusTexto.textContent = dados.restantes !== undefined
+        ? `Feedback enviado! (${dados.restantes} restantes hoje)`
+        : "Feedback enviado com sucesso! Obrigado.";
             
             // Limpa o formulário
             mensagemInput.value = "";
