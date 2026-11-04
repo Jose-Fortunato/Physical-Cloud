@@ -3,16 +3,13 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-// Configuração do CORS
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
-const janelas = new Map<string, { count: number; reset: number }>();
 const LIMITE_POR_JANELA = 25;
-const JANELA_MS = 24 * 60 * 60 * 1000;
 
 function obterIp(req: Request): string {
   const xff = req.headers.get("x-forwarded-for");
@@ -20,22 +17,7 @@ function obterIp(req: Request): string {
   return req.headers.get("cf-connecting-ip") || "desconhecido";
 }
 
-function verificarRateLimit(ip: string): { permitido: boolean; restantes: number; resetEm: number } {
-  const agora = Date.now();
-  let j = janelas.get(ip);
-  if (!j || agora >= j.reset) {
-    j = { count: 0, reset: agora + JANELA_MS };
-    janelas.set(ip, j);
-  }
-  if (j.count >= LIMITE_POR_JANELA) {
-    return { permitido: false, restantes: 0, resetEm: j.reset };
-  }
-  j.count++;
-  return { permitido: true, restantes: LIMITE_POR_JANELA - j.count, resetEm: j.reset };
-}
-
 Deno.serve(async (req) => {
-  // Responde ao preflight do navegador (OPTIONS)
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
@@ -47,18 +29,28 @@ Deno.serve(async (req) => {
   }
 
   const ip = obterIp(req);
-  const rl = verificarRateLimit(ip);
-  if (!rl.permitido) {
+  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+    auth: { persistSession: false },
+  });
+
+  // Conta quantos feedbacks este IP enviou nas últimas 24 horas
+  const dataLimite = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const { count, error: erroContagem } = await supabase
+    .from("feedback")
+    .select("*", { count: "exact", head: true })
+    .eq("ip", ip)
+    .gte("created_at", dataLimite);
+
+  if (erroContagem) {
+    console.error("Erro ao contar feedbacks:", erroContagem);
+  }
+
+  if (count !== null && count >= LIMITE_POR_JANELA) {
     return new Response(JSON.stringify({
       erro: "Você atingiu o limite de 25 feedbacks por dia. Tente novamente amanhã.",
-      resetEm: rl.resetEm,
     }), {
       status: 429,
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "application/json",
-        "Retry-After": String(Math.ceil((rl.resetEm - Date.now()) / 1000)),
-      },
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 
@@ -86,12 +78,9 @@ Deno.serve(async (req) => {
     });
   }
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    auth: { persistSession: false },
-  });
-
+  // Salva o feedback (incluindo o IP)
   const { error } = await supabase.from("feedback").insert([{
-    rating, categoria, mensagem, source: "web",
+    rating, categoria, mensagem, source: "web", ip
   }]);
 
   if (error) {
@@ -101,9 +90,12 @@ Deno.serve(async (req) => {
     });
   }
 
+  // Retorna quantos ainda restam hoje (baseado no que já foi salvo no banco)
+  const restantes = Math.max(0, LIMITE_POR_JANELA - ((count || 0) + 1));
+
   return new Response(JSON.stringify({
     sucesso: true,
-    restantes: rl.restantes,
+    restantes: restantes,
   }), {
     status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
