@@ -220,10 +220,24 @@ function obterAlias(deviceId) {
 function salvarAlias(deviceId, novoNome) {
     if (!deviceId) return;
     try {
+        // Salva nos aliases (para a sessão atual)
         const aliases = JSON.parse(localStorage.getItem("physicalCloudAliases") || "{}");
         aliases[deviceId] = novoNome;
         localStorage.setItem("physicalCloudAliases", JSON.stringify(aliases));
-    } catch {}
+
+        // Atualiza o nome na lista de dispositivos conhecidos
+        const lista = obterDispositivosConhecidos();
+        const idx = lista.findIndex(d => d.deviceId === deviceId);
+        if (idx >= 0) {
+            lista[idx].nome = novoNome;
+            localStorage.setItem("physicalCloudDispositivosConhecidos", JSON.stringify(lista));
+        }
+        
+        // Força a tela a atualizar para mostrar o nome novo
+        atualizarListaDispositivos();
+    } catch (e) {
+        console.error("Erro ao salvar apelido:", e);
+    }
 }
 
 // Substitua a função atualizarListaDispositivos INTEIRA por esta:
@@ -831,7 +845,7 @@ function conectarSocket() {
         pingInterval = setInterval(() => {
             if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
         }, 240000);
-
+ enviar({ type: "identificar", deviceId: obterDeviceId(), nome: obterNomeDispositivo() });
         if (reconectando) {
             reconectando = false;
             aviso("Reconectado ao servidor.");
