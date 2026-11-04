@@ -3,6 +3,13 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
+// Configuração do CORS
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
 const janelas = new Map<string, { count: number; reset: number }>();
 const LIMITE_POR_JANELA = 25;
 const JANELA_MS = 24 * 60 * 60 * 1000;
@@ -28,9 +35,14 @@ function verificarRateLimit(ip: string): { permitido: boolean; restantes: number
 }
 
 Deno.serve(async (req) => {
+  // Responde ao preflight do navegador (OPTIONS)
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
   if (req.method !== "POST") {
     return new Response(JSON.stringify({ erro: "Método não permitido" }), {
-      status: 405, headers: { "Content-Type": "application/json" },
+      status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 
@@ -43,6 +55,7 @@ Deno.serve(async (req) => {
     }), {
       status: 429,
       headers: {
+        ...corsHeaders,
         "Content-Type": "application/json",
         "Retry-After": String(Math.ceil((rl.resetEm - Date.now()) / 1000)),
       },
@@ -54,7 +67,7 @@ Deno.serve(async (req) => {
     body = await req.json();
   } catch {
     return new Response(JSON.stringify({ erro: "JSON inválido" }), {
-      status: 400, headers: { "Content-Type": "application/json" },
+      status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 
@@ -64,12 +77,12 @@ Deno.serve(async (req) => {
 
   if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
     return new Response(JSON.stringify({ erro: "Nota inválida" }), {
-      status: 400, headers: { "Content-Type": "application/json" },
+      status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
   if (!["elogio", "sugestao", "bug", "outro"].includes(categoria)) {
     return new Response(JSON.stringify({ erro: "Categoria inválida" }), {
-      status: 400, headers: { "Content-Type": "application/json" },
+      status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 
@@ -84,7 +97,7 @@ Deno.serve(async (req) => {
   if (error) {
     console.error("Erro ao inserir feedback:", error);
     return new Response(JSON.stringify({ erro: "Falha ao salvar feedback" }), {
-      status: 500, headers: { "Content-Type": "application/json" },
+      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 
@@ -92,6 +105,6 @@ Deno.serve(async (req) => {
     sucesso: true,
     restantes: rl.restantes,
   }), {
-    status: 200, headers: { "Content-Type": "application/json" },
+    status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 });
