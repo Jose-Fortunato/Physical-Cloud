@@ -1547,17 +1547,13 @@
     $("btn-app-futuro-ok")?.addEventListener("click", () => {
       $("modal-app-futuro").classList.remove("active");
     });
-        // ─── Lógica para Editar Nome (Fase 1) ───
+          // ─── Lógica para Editar Nome (Fase 1) ───
     let sessaoEditandoNome = null;
 
-    window.abrirModalEditarNome = function(sessaoId) {
-      const sessoes = window.PhysicalCloud?.sessoes;
-      const s = sessoes ? sessoes.get(sessaoId) : null;
-      if (!s) return;
-
+    window.abrirModalEditarNome = function(sessaoId, nomeAtual) {
       sessaoEditandoNome = sessaoId;
       const input = $("input-editar-nome");
-      if (input) input.value = s.nome;
+      if (input) input.value = nomeAtual;
       
       $("modal-editar-nome").classList.add("active");
       setTimeout(() => input?.focus(), 100);
@@ -1578,12 +1574,13 @@
 
       if (novoNome && s && novoNome !== s.nome) {
         s.nome = novoNome;
-        // Atualiza a UI local
+        // Salva o apelido apenas no SEU navegador
+        if (s.deviceId && typeof window.PhysicalCloud.salvarAlias === "function") {
+          window.PhysicalCloud.salvarAlias(s.deviceId, novoNome);
+        }
         if (typeof window.PhysicalCloud.atualizarListaDispositivos === "function") {
           window.PhysicalCloud.atualizarListaDispositivos();
         }
-        // Envia para o servidor propagar
-        window.PhysicalCloud.enviar({ type: "atualizar-nome", nome: novoNome });
       }
 
       sessaoEditandoNome = null;
