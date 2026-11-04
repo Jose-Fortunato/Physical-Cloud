@@ -26,7 +26,7 @@ let aguardandoAprovacao = false;
 /** @type {string | null} */
 let sessaoAguardando = null;
 
-/** @type {Map<string, {papel: string, nome: string, permissao: string}>} */
+/** @type {Map<string, {papel: string, nome: string, permissao: string, deviceId?: string}>} */
 const sessoes = new Map();
 
 /** @type {ReturnType<typeof setInterval> | null} */
@@ -202,6 +202,31 @@ const deviceActions     = document.getElementById("device-actions");
 const listaConhecidos   = document.getElementById("lista-conhecidos"); // Adicionado no HTML
 const containerConhecidos = document.getElementById("conhecidos-container"); // Adicionado no HTML
 
+// Adicione estas duas funções antes de atualizarListaDispositivos
+/**
+ * @param {string | number} deviceId
+ */
+function obterAlias(deviceId) {
+    try {
+        const aliases = JSON.parse(localStorage.getItem("physicalCloudAliases") || "{}");
+        return aliases[deviceId] || null;
+    } catch { return null; }
+}
+
+/**
+ * @param {string | number} deviceId
+ * @param {any} novoNome
+ */
+function salvarAlias(deviceId, novoNome) {
+    if (!deviceId) return;
+    try {
+        const aliases = JSON.parse(localStorage.getItem("physicalCloudAliases") || "{}");
+        aliases[deviceId] = novoNome;
+        localStorage.setItem("physicalCloudAliases", JSON.stringify(aliases));
+    } catch {}
+}
+
+// Substitua a função atualizarListaDispositivos INTEIRA por esta:
 function atualizarListaDispositivos() {
     if (!listaDispositivos || !emptyDispositivos) return;
     
@@ -231,25 +256,28 @@ function atualizarListaDispositivos() {
             const nomeWrap = document.createElement("div");
             nomeWrap.style.display = "flex";
             nomeWrap.style.alignItems = "center";
-            nomeWrap.style.gap = "6px";
+            nomeWrap.style.gap = "8px";
 
             const nome = document.createElement("span");
             nome.className = "device-name";
             nome.textContent = s.nome;
 
+            // O novo botão de Editar Nome
             const btnEdit = document.createElement("button");
-            btnEdit.className = "device-btn-rename";
-            btnEdit.innerHTML = "✏️";
-            btnEdit.title = "Editar nome";
-            btnEdit.addEventListener("click", (e) => {
+            btnEdit.className = "secondary-btn";
+            btnEdit.style.padding = "2px 8px";
+            btnEdit.style.fontSize = "11px";
+            btnEdit.textContent = "Editar nome";
+                        btnEdit.addEventListener("click", (e) => {
                 e.stopPropagation();
-                abrirModalEditarNome(sessaoId);
+                /** @type {any} */ (window).abrirModalEditarNome?.(sessaoId, s.nome);
             });
 
             nomeWrap.append(nome, btnEdit);
 
             const detalhes = document.createElement("span");
             detalhes.className = "device-details";
+            // @ts-ignore
             const permissaoTexto = TEXTO_PERMISSAO[s.permissao] || s.permissao;
             detalhes.textContent = s.papel === "servidor"
                 ? `Conectado a você · ${permissaoTexto}`
@@ -271,24 +299,19 @@ function atualizarListaDispositivos() {
         }
     }
 
-    // 2. Atualiza Conhecidos
+    // 2. Atualiza Conhecidos (Fora do if/else para aparecer mesmo desconectado)
     if (listaConhecidos && containerConhecidos) {
         const conhecidos = obterDispositivosConhecidos();
-        // Filtra os que já estão conectados agora
-        const conectadosIds = new Set();
-        for (const id of sessoes.keys()) {
-            // Não temos o deviceId na sessão local, apenas o sessaoId. 
-            // A filtragem exata fica complexa sem guardar o deviceId no Map de sessões.
-            // Vamos mostrar todos os conhecidos, mas desabilitar se estiver com o mesmo nome.
-        }
-
         if (conhecidos.length === 0) {
             containerConhecidos.style.display = "none";
         } else {
             containerConhecidos.style.display = "";
             listaConhecidos.innerHTML = "";
-            
             for (const d of conhecidos) {
+                // Se já estiver conectado, não mostra na lista de conhecidos
+                const jaConectado = Array.from(sessoes.values()).some(s => s.deviceId === d.deviceId);
+                if (jaConectado) continue;
+
                 const card = document.createElement("div");
                 card.className = "device-card known-card";
 
@@ -493,18 +516,7 @@ function mostrarProximoPedido() {
     const contagem = document.createElement("p");
     Object.assign(contagem.style, { opacity: "0.7", fontSize: "13px" });
 
-    const rotulo = document.createElement("label");
-    rotulo.textContent = "Permissão: ";
-    const escolha = document.createElement("select");
-    for (const [valor, nome] of Object.entries(TEXTO_PERMISSAO)) {
-        const opcao = document.createElement("option");
-        opcao.value = valor;
-        opcao.textContent = nome;
-        escolha.appendChild(opcao);
-    }
-    rotulo.appendChild(escolha);
-
-    const botoes = document.createElement("div");
+       const botoes = document.createElement("div");
     Object.assign(botoes.style, { display: "flex", gap: "12px", justifyContent: "center", marginTop: "16px" });
 
     const btnPermitir = document.createElement("button");
@@ -514,7 +526,8 @@ function mostrarProximoPedido() {
         background: "#1f7a4d", color: "#fff", border: "none", borderRadius: "10px",
         padding: "10px 20px", cursor: "pointer",
     });
-    btnPermitir.addEventListener("click", () => responderPedido(true, escolha.value));
+    // Agora envia direto "leitura-escrita" sem perguntar
+    btnPermitir.addEventListener("click", () => responderPedido(true, "leitura-escrita"));
 
     const btnRecusar = document.createElement("button");
     btnRecusar.type = "button";
@@ -526,11 +539,12 @@ function mostrarProximoPedido() {
     btnRecusar.addEventListener("click", () => responderPedido(false, "leitura"));
 
     botoes.append(btnPermitir, btnRecusar);
-    caixa.append(titulo, texto, rotulo, contagem, botoes);
+    
+    // Removemos o 'rotulo' do append, deixando só titulo, texto, contagem e botoes
+    caixa.append(titulo, texto, contagem, botoes);
     fundo.appendChild(caixa);
     document.body.appendChild(fundo);
     dialogoPedido = fundo;
-
     const atualizar = () => {
         const restante = Math.max(0, TEMPO_PEDIDO_S - Math.floor((Date.now() - pedido.chegouEm) / 1000));
         contagem.textContent = `Expira em ${restante}s`;
@@ -706,7 +720,7 @@ function tratarMensagem(event) {
             mostrarProximoPedido();
             break;
 
-        case "conectado": {
+                case "conectado": {
             aguardandoAprovacao = false;
             sessaoAguardando = null;
             const permissao = String(dados.permissao || "leitura");
@@ -714,21 +728,23 @@ function tratarMensagem(event) {
             const nomeServidor = String(dados.servidorNome || "Dispositivo servidor");
             const deviceIdServidor = dados.servidorDeviceId;
 
-            sessoes.set(sessaoId, { papel: "cliente", nome: nomeServidor, permissao });
+            const alias = obterAlias(deviceIdServidor);
+            sessoes.set(sessaoId, { papel: "cliente", nome: alias || nomeServidor, permissao, deviceId: deviceIdServidor });
             
             if (deviceIdServidor) {
-                salvarDispositivoConhecido(deviceIdServidor, nomeServidor, "servidor");
+                salvarDispositivoConhecido(deviceIdServidor, alias || nomeServidor, "servidor");
             }
 
             telaDeConectar?.classList.remove("active");
             limparInputs();
+            // @ts-ignore
             aviso(`${dados.mensagem || "Conexão estabelecida com sucesso!"} (${TEXTO_PERMISSAO[permissao] || permissao})`);
             atualizarListaDispositivos();
             window.dispatchEvent(new CustomEvent("physicalcloud:sessao-ativa", { detail: { sessaoId, papel: "cliente" } }));
             break;
         }
 
-        case "dispositivo-conectou": {
+                case "dispositivo-conectou": {
             const sessaoId = String(dados.sessaoId);
             if (!souServidor) {
                 enviar({ type: "encerrar", sessaoId });
@@ -738,13 +754,15 @@ function tratarMensagem(event) {
             const nome = String(dados.nome || "Dispositivo");
             const deviceIdCliente = dados.clienteDeviceId;
 
-            sessoes.set(sessaoId, { papel: "servidor", nome, permissao });
+            const alias = obterAlias(deviceIdCliente);
+            sessoes.set(sessaoId, { papel: "servidor", nome: alias || nome, permissao, deviceId: deviceIdCliente });
 
             if (deviceIdCliente) {
-                salvarDispositivoConhecido(deviceIdCliente, nome, "cliente");
+                salvarDispositivoConhecido(deviceIdCliente, alias || nome, "cliente");
             }
 
-            aviso(`${nome} conectou ao seu dispositivo (${TEXTO_PERMISSAO[permissao] || permissao}).`);
+            // @ts-ignore
+            aviso(`${alias || nome} conectou ao seu dispositivo (${TEXTO_PERMISSAO[permissao] || permissao}).`);
             atualizarListaDispositivos();
             window.dispatchEvent(new CustomEvent("physicalcloud:sessao-ativa", { detail: { sessaoId, papel: "servidor" } }));
             break;
@@ -897,6 +915,10 @@ window.addEventListener("physicalcloud:aviso-local", (event) => {
     }
 });
 
-/** @type {any} */ (window).PhysicalCloud = { enviar, sessoes, obterDeviceId, encerrarSessao, aviso, obterNomeDispositivo, atualizarNomeLocal };
+/** @type {any} */ (window).PhysicalCloud = { 
+    enviar, sessoes, obterDeviceId, encerrarSessao, aviso, 
+    obterNomeDispositivo, atualizarListaDispositivos, salvarAlias 
+};
 
 conectarSocket();
+atualizarListaDispositivos(); // Isso faz a lista de conhecidos aparecer assim que a página abre!
