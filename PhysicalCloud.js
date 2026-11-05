@@ -724,7 +724,7 @@ function tratarMensagem(event) {
             break;
 
         case "pedido-conexao":
-            if (!souServidor) return;
+           
             filaPedidos.push({
                 sessaoId: String(dados.sessaoId),
                 nome: String(dados.nome || "Dispositivo"),
@@ -760,10 +760,7 @@ function tratarMensagem(event) {
 
                 case "dispositivo-conectou": {
             const sessaoId = String(dados.sessaoId);
-            if (!souServidor) {
-                enviar({ type: "encerrar", sessaoId });
-                return;
-            }
+             souServidor = true;
             const permissao = String(dados.permissao || "leitura");
             const nome = String(dados.nome || "Dispositivo");
             const deviceIdCliente = dados.clienteDeviceId;
