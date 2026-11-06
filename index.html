@@ -105,13 +105,23 @@
             <div id="lista-transfers" class="lista-transfers"></div>
           </div>
 
-                    <div id="recebidos-container" style="display:none">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin: 24px 0 12px;">
-              <h2 class="section-title" style="margin: 0;">Recebidos recentemente</h2>
-              <button class="secondary-btn" id="btn-limpar-historico" style="font-size: 11px; padding: 4px 8px;">Limpar histórico</button>
-            </div>
-            <div id="lista-recebidos" class="lista-recebidos"></div>
+                           <!-- NOVO HISTÓRICO DE ENVIOS E RECEBIMENTOS -->
+        <div id="historico-container" style="display:none; margin-top: 32px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h2 class="section-title" style="margin: 0;">Histórico Recente (Máx. 50)</h2>
+            <button class="secondary-btn" id="btn-limpar-historico" style="font-size: 11px; padding: 4px 8px;">Limpar tudo</button>
           </div>
+          <div style="display: flex; gap: 16px; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 280px; background: var(--bg-sidebar); border: 1px solid #2a2a2a; border-radius: 10px; padding: 16px;">
+              <h3 style="font-size: 14px; margin-bottom: 12px; color: var(--text-muted);">⬆ Enviados</h3>
+              <div id="lista-enviados" class="lista-recebidos"></div>
+            </div>
+            <div style="flex: 1; min-width: 280px; background: var(--bg-sidebar); border: 1px solid #2a2a2a; border-radius: 10px; padding: 16px;">
+              <h3 style="font-size: 14px; margin-bottom: 12px; color: var(--text-muted);">⬇ Recebidos</h3>
+              <div id="lista-recebidos" class="lista-recebidos"></div>
+            </div>
+          </div>
+        </div>
         </div>
       </section>
     </main>
@@ -1399,22 +1409,76 @@
       atualizarTextoStatus(ui);
     });
 
-    // FASE 1 / Bug #12: no RECEPTOR, transfer-concluido (direcao=recebimento)
-    // incrementa arquivosDone; transfer-erro (com operacaoId) incrementa
-    // arquivosErro. Ambos chamam verificarConclusaoOperacao para fechar o
-    // cartão quando a contagem bater.
+        // ─── Gerenciamento de Histórico ───
+    const CHAVE_HIST_ENVIADOS = "physicalCloudHistoricoEnviados";
+    const CHAVE_HIST_RECEBIDOS = "physicalCloudHistoricoRecebidos";
+
+    function salvarNoHistorico(direcao, item) {
+      try {
+        const chave = direcao === "envio" ? CHAVE_HIST_ENVIADOS : CHAVE_HIST_RECEBIDOS;
+        let lista = JSON.parse(localStorage.getItem(chave) || "[]");
+        lista.unshift(item);
+        if (lista.length > 50) lista = lista.slice(0, 50);
+        localStorage.setItem(chave, JSON.stringify(lista));
+        renderizarHistorico();
+      } catch (e) {}
+    }
+
+    function renderizarHistorico() {
+      const container = $("historico-container");
+      if (!container) return;
+
+      const env = JSON.parse(localStorage.getItem(CHAVE_HIST_ENVIADOS) || "[]");
+      const rec = JSON.parse(localStorage.getItem(CHAVE_HIST_RECEBIDOS) || "[]");
+
+      if (env.length === 0 && rec.length === 0) {
+        container.style.display = "none";
+        return;
+      }
+      container.style.display = "";
+
+      const renderLista = (lista, elId) => {
+        const el = $(elId);
+        el.innerHTML = "";
+        if (lista.length === 0) {
+           el.innerHTML = '<div style="color:#666;font-size:12px;">Nenhum arquivo</div>';
+           return;
+        }
+        for (const item of lista) {
+          const div = document.createElement("div");
+          div.className = "recebido-item";
+          div.innerHTML = `
+            <span class="recebido-icone">✔</span>
+            <div class="recebido-info">
+              <span class="recebido-nome" title="${item.caminhoRelativo}">${item.caminhoRelativo}</span>
+              <span class="recebido-detalhe">${formatarTamanho(item.tamanho)} · ${new Date(item.data).toLocaleString('pt-BR', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
+            </div>
+          `;
+          el.appendChild(div);
+        }
+      };
+      renderLista(env, "lista-enviados");
+      renderLista(rec, "lista-recebidos");
+    }
+
+    $("btn-limpar-historico")?.addEventListener("click", () => {
+       if(confirm("Apagar todo o histórico?")) {
+          localStorage.removeItem(CHAVE_HIST_ENVIADOS);
+          localStorage.removeItem(CHAVE_HIST_RECEBIDOS);
+          renderizarHistorico();
+       }
+    });
+
     window.addEventListener("physicalcloud:transfer-concluido", (ev) => {
       const { operacaoId, tamanho, direcao, nome, caminhoRelativo } = ev.detail;
 
-      // Histórico de recebidos (só para recebimentos)
-            if (direcao === "recebimento") {
-        const itemHistorico = {
+      if (direcao === "recebimento" || direcao === "envio") {
+        salvarNoHistorico(direcao, {
           nome: nome || "arquivo",
           caminhoRelativo: caminhoRelativo || nome || "arquivo",
           tamanho: tamanho || 0,
           data: Date.now()
-        };
-        salvarNoHistorico(itemHistorico);
+        });
       }
 
       if (!operacaoId) return;
@@ -1431,6 +1495,7 @@
         verificarConclusaoOperacao(operacaoId);
       }
     });
+    
 
     window.addEventListener("physicalcloud:operacao-concluida", (ev) => {
       finalizarCartaoOperacao(ev.detail.operacaoId, ev.detail);
@@ -1652,9 +1717,9 @@
         renderizarHistorico();
       }
     });
-    // ─── Inicialização ───
+   
         // ─── Inicialização ───
-    renderizarHistorico(); // <--- Adicione esta linha
+    renderizarHistorico();
     atualizarEstadoNuvem();
     atualizarBotoesExplorador();
     atualizarEstadoNuvem();

@@ -735,6 +735,12 @@ function tratarMensagem(event) {
             break;
 
                 case "conectado": {
+                        try {
+        const peerId = dados.servidorDeviceId || dados.clienteDeviceId;
+        if (peerId) {
+            sessionStorage.setItem("physicalCloudAutoReconnect", JSON.stringify({ deviceIdAlvo: peerId }));
+        }
+    } catch {}
             aguardandoAprovacao = false;
             sessaoAguardando = null;
             const permissao = String(dados.permissao || "leitura");
@@ -759,6 +765,12 @@ function tratarMensagem(event) {
         }
 
                 case "dispositivo-conectou": {
+                        try {
+        const peerId = dados.servidorDeviceId || dados.clienteDeviceId;
+        if (peerId) {
+            sessionStorage.setItem("physicalCloudAutoReconnect", JSON.stringify({ deviceIdAlvo: peerId }));
+        }
+    } catch {}
             const sessaoId = String(dados.sessaoId);
              souServidor = true;
             const permissao = String(dados.permissao || "leitura");
@@ -791,6 +803,21 @@ function tratarMensagem(event) {
 
         case "sessao-encerrada": {
             const id = String(dados.sessaoId);
+
+            if (dados.motivo === 'dispositivo-desconectou') {
+                // Espera 4 segundos antes de remover da tela, dando tempo para o auto-reconnect
+                setTimeout(() => {
+                    if (sessoes.has(id)) {
+                        const existia = sessoes.delete(id);
+                        if (existia) {
+                            aviso("A conexão foi encerrada.");
+                            atualizarListaDispositivos();
+                            window.dispatchEvent(new CustomEvent("physicalcloud:sessao-encerrada", { detail: { sessaoId: id } }));
+                        }
+                    }
+                }, 4000);
+                return; 
+            }
             removerPedido(id);
             const existia = sessoes.delete(id);
             const eraMeuPedido = id === sessaoAguardando;
@@ -851,6 +878,23 @@ function conectarSocket() {
             abrirModalAoGerar = true;
             enviar({ type: "tornar-servidor", deviceId: obterDeviceId(), nome: obterNomeDispositivo() });
         }
+                setTimeout(() => {
+            try {
+                const auto = sessionStorage.getItem("physicalCloudAutoReconnect");
+                if (auto) {
+                    const data = JSON.parse(auto);
+                    if (data.deviceIdAlvo) {
+                        aviso("Restaurando conexão...");
+                        enviar({
+                            type: "reconectar",
+                            deviceId: obterDeviceId(),
+                            deviceIdAlvo: data.deviceIdAlvo,
+                            nome: obterNomeDispositivo()
+                        });
+                    }
+                }
+            } catch {}
+        }, 1000);
     });
 
     ws.addEventListener("message", tratarMensagem);
@@ -904,6 +948,7 @@ document.addEventListener("visibilitychange", () => {
  * @param {string} sessaoId
  */
 function encerrarSessao(sessaoId) {
+        try { sessionStorage.removeItem("physicalCloudAutoReconnect"); } catch {}
     enviar({ type: "encerrar", sessaoId });
     const existia = sessoes.delete(sessaoId);
     atualizarListaDispositivos();
