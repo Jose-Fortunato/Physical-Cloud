@@ -977,4 +977,9 @@ body {
 /* Input do modal de edição */
 #input-editar-nome:focus {
   border-color: var(--accent);
+}/* ─── Fase 2: Ajuste no Histórico ─── */
+.recebido-detalhe {
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }

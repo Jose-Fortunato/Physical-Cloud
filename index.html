@@ -100,16 +100,27 @@
             </button>
           </div>
 
-          <div id="transfers-ativos" style="display:none">
+          
+        </div>
+        <div id="transfers-ativos" style="display:none">
             <h2 class="section-title">Em andamento</h2>
             <div id="lista-transfers" class="lista-transfers"></div>
           </div>
-
-          <div id="recebidos-container" style="display:none">
-            <h2 class="section-title">Recebidos nesta sessão</h2>
-            <div id="lista-recebidos" class="lista-recebidos"></div>
+           <div id="historico-container" style="display:none; margin-top: 32px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h2 class="section-title" style="margin: 0;">Histórico Recente (Máx. 50)</h2>
+            <button class="secondary-btn" id="btn-limpar-historico" style="font-size: 11px; padding: 4px 8px;">Limpar tudo</button>
           </div>
-        </div>
+          <div style="display: flex; gap: 16px; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 280px; background: var(--bg-sidebar); border: 1px solid #2a2a2a; border-radius: 10px; padding: 16px;">
+              <h3 style="font-size: 14px; margin-bottom: 12px; color: var(--text-muted);">⬆ Enviados</h3>
+              <div id="lista-enviados" class="lista-recebidos"></div>
+            </div>
+            <div style="flex: 1; min-width: 280px; background: var(--bg-sidebar); border: 1px solid #2a2a2a; border-radius: 10px; padding: 16px;">
+              <h3 style="font-size: 14px; margin-bottom: 12px; color: var(--text-muted);">⬇ Recebidos</h3>
+              <div id="lista-recebidos" class="lista-recebidos"></div>
+            </div>
+          </div>
       </section>
     </main>
   </div>
@@ -1343,15 +1354,26 @@
       }, 4000);
     }
 
-    // Operação iniciada (emitida em ambos os lados)
-    window.addEventListener("physicalcloud:operacao-iniciada", (ev) => {
+        window.addEventListener("physicalcloud:operacao-iniciada", (ev) => {
       const { operacaoId, sessaoId, direcao, totalArquivos, totalBytes } = ev.detail;
       criarCartaoOperacao(operacaoId, direcao, totalArquivos, sessaoId);
       const ui = operacoesUI.get(operacaoId);
+      
       if (ui) {
         ui.bytesTotal = totalBytes || 0;
         atualizarBarra(ui);
-        atualizarTextoStatus(ui);
+        
+        // NOVO: Força o texto de aguardando no cartão
+        if (direcao === "envio") {
+          ui.status.textContent = "Aguardando o outro dispositivo aceitar...";
+        } else {
+          atualizarTextoStatus(ui);
+        }
+      }
+
+      // NOVO: Aviso flutuante na tela
+      if (direcao === "envio") {
+        window.PhysicalCloud?.aviso?.("Enviando pedido. Aguardando o outro dispositivo aceitar...");
       }
     });
 
@@ -1396,48 +1418,19 @@
       atualizarTextoStatus(ui);
     });
 
-    // FASE 1 / Bug #12: no RECEPTOR, transfer-concluido (direcao=recebimento)
-    // incrementa arquivosDone; transfer-erro (com operacaoId) incrementa
-    // arquivosErro. Ambos chamam verificarConclusaoOperacao para fechar o
-    // cartão quando a contagem bater.
-    window.addEventListener("physicalcloud:transfer-concluido", (ev) => {
-      const { operacaoId, tamanho, direcao, nome, caminhoRelativo } = ev.detail;
+    
 
-      // Histórico de recebidos (só para recebimentos)
-      if (direcao === "recebimento") {
-        const item = document.createElement("div");
-        item.className = "recebido-item";
-        const icone = document.createElement("span");
-        icone.className = "recebido-icone";
-        icone.textContent = "✔";
-        const info = document.createElement("div");
-        info.className = "recebido-info";
-        const nomeEl = document.createElement("span");
-        nomeEl.className = "recebido-nome";
-        nomeEl.textContent = caminhoRelativo || nome || "arquivo";
-        const det = document.createElement("span");
-        det.className = "recebido-detalhe";
-        det.textContent = formatarTamanho(tamanho || 0);
-        info.append(nomeEl, det);
-        item.append(icone, info);
-        $("lista-recebidos").appendChild(item);
-        $("recebidos-container").style.display = "";
-      }
+   
 
-      if (!operacaoId) return;
-      const ui = operacoesUI.get(operacaoId);
-      if (!ui || ui.finalizado) return;
-
-      if (direcao === "recebimento") {
-        if (ui.arquivosDone + ui.arquivosErro < ui.totalArquivos) {
-          ui.arquivosDone++;
-        }
-        if (Number.isFinite(tamanho)) ui.bytesAcumulados += tamanho;
-        atualizarBarra(ui);
-        atualizarTextoStatus(ui);
-        verificarConclusaoOperacao(operacaoId);
-      }
+    $("btn-limpar-historico")?.addEventListener("click", () => {
+       if(confirm("Apagar todo o histórico?")) {
+          localStorage.removeItem(CHAVE_HIST_ENVIADOS);
+          localStorage.removeItem(CHAVE_HIST_RECEBIDOS);
+          renderizarHistorico();
+       }
     });
+
+      
 
     window.addEventListener("physicalcloud:operacao-concluida", (ev) => {
       finalizarCartaoOperacao(ev.detail.operacaoId, ev.detail);
@@ -1586,10 +1579,114 @@
       sessaoEditandoNome = null;
       $("modal-editar-nome").classList.remove("active");
     });
+         // ─── Gerenciamento de Histórico Unificado (Fase 2) ───
+    // Essas constantes devem aparecer APENAS UMA VEZ no arquivo.
+    const CHAVE_HIST_ENVIADOS = "physicalCloudHistoricoEnviados";
+    const CHAVE_HIST_RECEBIDOS = "physicalCloudHistoricoRecebidos";
+
+    function salvarNoHistorico(direcao, item) {
+      try {
+        const chave = direcao === "envio" ? CHAVE_HIST_ENVIADOS : CHAVE_HIST_RECEBIDOS;
+        let lista = JSON.parse(localStorage.getItem(chave) || "[]");
+        lista.unshift(item);
+        if (lista.length > 50) lista = lista.slice(0, 50);
+        localStorage.setItem(chave, JSON.stringify(lista));
+        renderizarHistorico();
+      } catch (e) { console.error("Erro ao salvar histórico:", e); }
+    }
+
+    function renderizarHistorico() {
+      const container = $("historico-container");
+      if (!container) return;
+
+      let env = [], rec = [];
+      try {
+        env = JSON.parse(localStorage.getItem(CHAVE_HIST_ENVIADOS) || "[]");
+        rec = JSON.parse(localStorage.getItem(CHAVE_HIST_RECEBIDOS) || "[]");
+      } catch {}
+
+      if (env.length === 0 && rec.length === 0) {
+        container.style.display = "none";
+        return;
+      }
+      container.style.display = "";
+
+      const renderLista = (lista, elId) => {
+        const el = $(elId);
+        el.innerHTML = "";
+        if (lista.length === 0) {
+           el.innerHTML = '<div style="color:#666;font-size:12px;">Nenhum arquivo</div>';
+           return;
+        }
+        for (const item of lista) {
+          const div = document.createElement("div");
+          div.className = "recebido-item";
+          
+          const nome = item.caminhoRelativo || item.nome || "arquivo";
+          const dataFormatada = new Date(item.data).toLocaleString('pt-BR', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
+          
+          div.innerHTML = `
+            <span class="recebido-icone">✔</span>
+            <div class="recebido-info">
+              <span class="recebido-nome" title="${nome}">${nome}</span>
+              <span class="recebido-detalhe">${formatarTamanho(item.tamanho)} · ${dataFormatada}</span>
+            </div>
+          `;
+          el.appendChild(div);
+        }
+      };
+      renderLista(env, "lista-enviados");
+      renderLista(rec, "lista-recebidos");
+    }
+
+    $("btn-limpar-historico")?.addEventListener("click", () => {
+       if(confirm("Apagar todo o histórico de envios e recebimentos?")) {
+          localStorage.removeItem(CHAVE_HIST_ENVIADOS);
+          localStorage.removeItem(CHAVE_HIST_RECEBIDOS);
+          renderizarHistorico();
+       }
+    });
+
+       // Trava de segurança para não salvar o mesmo arquivo duas vezes
+    const historicoSalvoIds = new Set();
+
+    window.addEventListener("physicalcloud:transfer-concluido", (ev) => {
+      const { transferId, operacaoId, tamanho, direcao, nome, caminhoRelativo } = ev.detail;
+
+      // Se o arquivo não tem ID ou já foi salvo, ignora a duplicata
+      if (!transferId || historicoSalvoIds.has(transferId)) return;
+      historicoSalvoIds.add(transferId);
+
+      // 1. Salva no histórico (apenas UMA vez por arquivo)
+      if (direcao === "recebimento" || direcao === "envio") {
+        salvarNoHistorico(direcao, {
+          nome: nome || "arquivo",
+          caminhoRelativo: caminhoRelativo || nome || "arquivo",
+          tamanho: tamanho || 0,
+          data: Date.now()
+        });
+      }
+
+      // 2. Atualiza o progresso visual
+      if (direcao === "recebimento" && operacaoId) {
+        const ui = operacoesUI.get(operacaoId);
+        if (ui && !ui.finalizado) {
+          if (ui.arquivosDone + ui.arquivosErro < ui.totalArquivos) {
+            ui.arquivosDone++;
+          }
+          if (Number.isFinite(tamanho)) ui.bytesAcumulados += tamanho;
+          atualizarBarra(ui);
+          atualizarTextoStatus(ui);
+          verificarConclusaoOperacao(operacaoId);
+        }
+      }
+    });
+
     // ─── Inicialização ───
+    renderizarHistorico();
     atualizarEstadoNuvem();
     atualizarBotoesExplorador();
-
+   
   </script>
 </body>
 </html>
