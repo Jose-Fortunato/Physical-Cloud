@@ -1418,54 +1418,9 @@
       atualizarTextoStatus(ui);
     });
 
-      
-    function salvarNoHistorico(direcao, item) {
-      try {
-        const chave = direcao === "envio" ? CHAVE_HIST_ENVIADOS : CHAVE_HIST_RECEBIDOS;
-        let lista = JSON.parse(localStorage.getItem(chave) || "[]");
-        lista.unshift(item);
-        if (lista.length > 50) lista = lista.slice(0, 50);
-        localStorage.setItem(chave, JSON.stringify(lista));
-        renderizarHistorico();
-      } catch (e) {}
-    }
+    
 
-    function renderizarHistorico() {
-      const container = $("historico-container");
-      if (!container) return;
-
-      const env = JSON.parse(localStorage.getItem(CHAVE_HIST_ENVIADOS) || "[]");
-      const rec = JSON.parse(localStorage.getItem(CHAVE_HIST_RECEBIDOS) || "[]");
-
-      if (env.length === 0 && rec.length === 0) {
-        container.style.display = "none";
-        return;
-      }
-      container.style.display = "";
-
-      const renderLista = (lista, elId) => {
-        const el = $(elId);
-        el.innerHTML = "";
-        if (lista.length === 0) {
-           el.innerHTML = '<div style="color:#666;font-size:12px;">Nenhum arquivo</div>';
-           return;
-        }
-        for (const item of lista) {
-          const div = document.createElement("div");
-          div.className = "recebido-item";
-          div.innerHTML = `
-            <span class="recebido-icone">✔</span>
-            <div class="recebido-info">
-              <span class="recebido-nome" title="${item.caminhoRelativo}">${item.caminhoRelativo}</span>
-              <span class="recebido-detalhe">${formatarTamanho(item.tamanho)} · ${new Date(item.data).toLocaleString('pt-BR', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>
-            </div>
-          `;
-          el.appendChild(div);
-        }
-      };
-      renderLista(env, "lista-enviados");
-      renderLista(rec, "lista-recebidos");
-    }
+   
 
     $("btn-limpar-historico")?.addEventListener("click", () => {
        if(confirm("Apagar todo o histórico?")) {
@@ -1475,9 +1430,11 @@
        }
     });
 
+        // ─── Listener Único para Conclusão de Arquivo ───
     window.addEventListener("physicalcloud:transfer-concluido", (ev) => {
       const { operacaoId, tamanho, direcao, nome, caminhoRelativo } = ev.detail;
 
+      // 1. Salva no histórico (apenas UMA vez por arquivo)
       if (direcao === "recebimento" || direcao === "envio") {
         salvarNoHistorico(direcao, {
           nome: nome || "arquivo",
@@ -1487,18 +1444,18 @@
         });
       }
 
-      if (!operacaoId) return;
-      const ui = operacoesUI.get(operacaoId);
-      if (!ui || ui.finalizado) return;
-
-      if (direcao === "recebimento") {
-        if (ui.arquivosDone + ui.arquivosErro < ui.totalArquivos) {
-          ui.arquivosDone++;
+      // 2. Atualiza o progresso visual (apenas no receptor)
+      if (direcao === "recebimento" && operacaoId) {
+        const ui = operacoesUI.get(operacaoId);
+        if (ui && !ui.finalizado) {
+          if (ui.arquivosDone + ui.arquivosErro < ui.totalArquivos) {
+            ui.arquivosDone++;
+          }
+          if (Number.isFinite(tamanho)) ui.bytesAcumulados += tamanho;
+          atualizarBarra(ui);
+          atualizarTextoStatus(ui);
+          verificarConclusaoOperacao(operacaoId);
         }
-        if (Number.isFinite(tamanho)) ui.bytesAcumulados += tamanho;
-        atualizarBarra(ui);
-        atualizarTextoStatus(ui);
-        verificarConclusaoOperacao(operacaoId);
       }
     });
     
