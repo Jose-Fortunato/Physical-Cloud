@@ -1356,15 +1356,26 @@
       }, 4000);
     }
 
-    // Operação iniciada (emitida em ambos os lados)
-    window.addEventListener("physicalcloud:operacao-iniciada", (ev) => {
+        window.addEventListener("physicalcloud:operacao-iniciada", (ev) => {
       const { operacaoId, sessaoId, direcao, totalArquivos, totalBytes } = ev.detail;
       criarCartaoOperacao(operacaoId, direcao, totalArquivos, sessaoId);
       const ui = operacoesUI.get(operacaoId);
+      
       if (ui) {
         ui.bytesTotal = totalBytes || 0;
         atualizarBarra(ui);
-        atualizarTextoStatus(ui);
+        
+        // NOVO: Força o texto de aguardando no cartão
+        if (direcao === "envio") {
+          ui.status.textContent = "Aguardando o outro dispositivo aceitar...";
+        } else {
+          atualizarTextoStatus(ui);
+        }
+      }
+
+      // NOVO: Aviso flutuante na tela
+      if (direcao === "envio") {
+        window.PhysicalCloud?.aviso?.("Enviando pedido. Aguardando o outro dispositivo aceitar...");
       }
     });
 
