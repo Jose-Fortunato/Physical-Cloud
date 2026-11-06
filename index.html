@@ -57,6 +57,7 @@
 
         <div class="device-actions" id="device-actions" style="display:none">
           <button class="secondary-btn" id="btn-conectar-extra">Conectar outro dispositivo</button>
+            <button class="secondary-btn" id="btn-desconectar-todos" style="color: #ff6b6b; border-color: #ff6b6b; margin-left: 8px;">Desconectar todos</button>
         </div>
 
         <div class="empty-state" id="empty-dispositivos">
@@ -1681,7 +1682,26 @@
         }
       }
     });
-
+    // ─── Atualização de Badge de Estado em Tempo Real ───
+    window.addEventListener("physicalcloud:peer-estado", (ev) => {
+      const { sessaoId, estado } = ev.detail;
+      const card = document.querySelector(`.device-card[data-sessao-id="${sessaoId}"]`);
+      if (!card) return;
+      
+      const badge = card.querySelector(".device-badge");
+      if (!badge) return;
+      
+      if (estado === "verificado" || estado === "canal-aberto") {
+        badge.className = "device-badge device-badge--online";
+        badge.textContent = "Online";
+      } else if (estado === "conectando" || estado === "offer-enviado" || estado === "answer-enviado") {
+        badge.className = "device-badge device-badge--connecting";
+        badge.textContent = "Conectando...";
+      } else if (estado === "fechado" || estado === "failed" || estado === "disconnected" || estado === "canal-fechado") {
+        badge.className = "device-badge device-badge--disconnected";
+        badge.textContent = "Desconectado";
+      }
+    });
     // ─── Inicialização ───
     renderizarHistorico();
     atualizarEstadoNuvem();

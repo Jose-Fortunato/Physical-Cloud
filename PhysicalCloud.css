@@ -982,4 +982,20 @@ body {
   display: flex;
   gap: 8px;
   align-items: center;
+}/* ─── Fase 3: UX Múltiplos Dispositivos ─── */
+.device-badge--connecting {
+  background: rgba(255, 210, 128, 0.15);
+  color: #ffd280;
+}
+
+.device-badge--disconnected {
+  background: rgba(255, 107, 107, 0.15);
+  color: #ff6b6b;
+}
+
+.secondary-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  border-color: #333;
+  color: #666;
 }
