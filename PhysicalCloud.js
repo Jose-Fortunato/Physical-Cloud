@@ -886,7 +886,7 @@ function conectarSocket() {
                     if (data.deviceIdAlvo) {
                         aviso("Restaurando conexão...");
                         enviar({
-                            type: "reconectar",
+                            type: "reconectar-silencioso", // <-- MUDOU AQUI
                             deviceId: obterDeviceId(),
                             deviceIdAlvo: data.deviceIdAlvo,
                             nome: obterNomeDispositivo()
@@ -948,7 +948,7 @@ document.addEventListener("visibilitychange", () => {
  * @param {string} sessaoId
  */
 function encerrarSessao(sessaoId) {
-        try { sessionStorage.removeItem("physicalCloudAutoReconnect"); } catch {}
+       try { sessionStorage.removeItem("physicalCloudAutoReconnect"); } catch {} 
     enviar({ type: "encerrar", sessaoId });
     const existia = sessoes.delete(sessaoId);
     atualizarListaDispositivos();
