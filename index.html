@@ -1430,35 +1430,7 @@
        }
     });
 
-        // ─── Listener Único para Conclusão de Arquivo ───
-    window.addEventListener("physicalcloud:transfer-concluido", (ev) => {
-      const { operacaoId, tamanho, direcao, nome, caminhoRelativo } = ev.detail;
-
-      // 1. Salva no histórico (apenas UMA vez por arquivo)
-      if (direcao === "recebimento" || direcao === "envio") {
-        salvarNoHistorico(direcao, {
-          nome: nome || "arquivo",
-          caminhoRelativo: caminhoRelativo || nome || "arquivo",
-          tamanho: tamanho || 0,
-          data: Date.now()
-        });
-      }
-
-      // 2. Atualiza o progresso visual (apenas no receptor)
-      if (direcao === "recebimento" && operacaoId) {
-        const ui = operacoesUI.get(operacaoId);
-        if (ui && !ui.finalizado) {
-          if (ui.arquivosDone + ui.arquivosErro < ui.totalArquivos) {
-            ui.arquivosDone++;
-          }
-          if (Number.isFinite(tamanho)) ui.bytesAcumulados += tamanho;
-          atualizarBarra(ui);
-          atualizarTextoStatus(ui);
-          verificarConclusaoOperacao(operacaoId);
-        }
-      }
-    });
-    
+      
 
     window.addEventListener("physicalcloud:operacao-concluida", (ev) => {
       finalizarCartaoOperacao(ev.detail.operacaoId, ev.detail);
@@ -1675,9 +1647,17 @@
        }
     });
 
-    window.addEventListener("physicalcloud:transfer-concluido", (ev) => {
-      const { operacaoId, tamanho, direcao, nome, caminhoRelativo } = ev.detail;
+       // Trava de segurança para não salvar o mesmo arquivo duas vezes
+    const historicoSalvoIds = new Set();
 
+    window.addEventListener("physicalcloud:transfer-concluido", (ev) => {
+      const { transferId, operacaoId, tamanho, direcao, nome, caminhoRelativo } = ev.detail;
+
+      // Se o arquivo não tem ID ou já foi salvo, ignora a duplicata
+      if (!transferId || historicoSalvoIds.has(transferId)) return;
+      historicoSalvoIds.add(transferId);
+
+      // 1. Salva no histórico (apenas UMA vez por arquivo)
       if (direcao === "recebimento" || direcao === "envio") {
         salvarNoHistorico(direcao, {
           nome: nome || "arquivo",
@@ -1687,18 +1667,18 @@
         });
       }
 
-      if (!operacaoId) return;
-      const ui = operacoesUI.get(operacaoId);
-      if (!ui || ui.finalizado) return;
-
-      if (direcao === "recebimento") {
-        if (ui.arquivosDone + ui.arquivosErro < ui.totalArquivos) {
-          ui.arquivosDone++;
+      // 2. Atualiza o progresso visual
+      if (direcao === "recebimento" && operacaoId) {
+        const ui = operacoesUI.get(operacaoId);
+        if (ui && !ui.finalizado) {
+          if (ui.arquivosDone + ui.arquivosErro < ui.totalArquivos) {
+            ui.arquivosDone++;
+          }
+          if (Number.isFinite(tamanho)) ui.bytesAcumulados += tamanho;
+          atualizarBarra(ui);
+          atualizarTextoStatus(ui);
+          verificarConclusaoOperacao(operacaoId);
         }
-        if (Number.isFinite(tamanho)) ui.bytesAcumulados += tamanho;
-        atualizarBarra(ui);
-        atualizarTextoStatus(ui);
-        verificarConclusaoOperacao(operacaoId);
       }
     });
 
