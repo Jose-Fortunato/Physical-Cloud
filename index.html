@@ -57,12 +57,17 @@
 
         <div class="device-actions" id="device-actions" style="display:none">
           <button class="secondary-btn" id="btn-conectar-extra">Conectar outro dispositivo</button>
-            <button class="secondary-btn" id="btn-desconectar-todos" style="color: #ff6b6b; border-color: #ff6b6b; margin-left: 8px;">Desconectar todos</button>
+          <button class="secondary-btn" id="btn-abrir-conectar-por-id-extra" style="border-color: var(--accent); color: var(--accent);">🔑 Por ID</button>
+          <button class="secondary-btn" id="btn-desconectar-todos" style="color: #ff6b6b; border-color: #ff6b6b;">Desconectar todos</button>
         </div>
 
         <div class="empty-state" id="empty-dispositivos">
           <p>Nenhum dispositivo conectado ainda.</p>
-          <button class="primary-btn" id="btn-conectar">Conectar dispositivo</button>
+          <div style="display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 4px;">
+            <button class="primary-btn" id="btn-conectar">Conectar dispositivo</button>
+            <button class="secondary-btn" id="btn-abrir-conectar-por-id" style="border-color: var(--accent); color: var(--accent);">🔑 Conectar por ID</button>
+          </div>
+          <p style="font-size: 12px; color: #9a9a9a; margin-top: 8px; text-align: center; line-height: 1.5;">O <strong style="color: #ccc;">Conectar por ID</strong> requer o app instalado e permite acesso direto sem pedidos de aprovação.</p>
         </div>
 
         <div class="device-list" id="lista-dispositivos" style="display:none"></div>
@@ -300,6 +305,39 @@
       </p>
     </div>
   </div>
+  <!-- Modal Conectar por ID -->
+  <div class="modal-overlay" id="modal-conectar-por-id">
+    <div class="modal-box" style="max-width: 420px;">
+      <button class="modal-close" id="btn-fechar-conectar-por-id">&times;</button>
+      <h2>Conectar por ID</h2>
+      <p class="modal-subtitle">
+        Digite o ID permanente do dispositivo com o app Physical Cloud em modo automático.
+        O ID tem o formato <strong>PC-XXXXXXXX</strong>.
+      </p>
+      <input
+        type="text"
+        id="input-conectar-por-id"
+        maxlength="11"
+        placeholder="PC-XXXXXXXX"
+        autocomplete="off"
+        spellcheck="false"
+        style="
+          width: 100%; background: #121212; color: #fff;
+          border: 1px solid #2a2a2a; border-radius: 8px;
+          padding: 14px 12px; margin-bottom: 8px;
+          font-size: 20px; text-align: center;
+          letter-spacing: 2px; text-transform: uppercase;
+          outline: none; font-family: monospace; box-sizing: border-box;
+        "
+      />
+      <p id="conectar-por-id-status" style="font-size:13px; color:#9a9a9a; min-height:18px; margin-bottom:16px; text-align:center;"></p>
+      <div style="display: flex; gap: 12px; justify-content: center;">
+        <button class="secondary-btn" id="btn-cancelar-conectar-por-id">Cancelar</button>
+        <button class="primary-btn" id="btn-confirmar-conectar-por-id">Conectar</button>
+      </div>
+    </div>
+  </div>
+
     <!-- NOVO: Modal de Editar Nome -->
   <div class="modal-overlay" id="modal-editar-nome">
     <div class="modal-box" style="max-width: 400px;">
@@ -328,6 +366,9 @@
   <script src="PhysicalCloud-webrtc.js"></script>
   <script src="PhysicalCloud-transfer.js"></script>
   <script src="PhysicalCloud-feedback.js"></script>
+  <!-- PhysicalCloud-auto.js: ativo apenas quando modo automático está ligado (app Android).
+       No site web funciona sem erro — só não faz nada se o modo auto estiver desativado. -->
+  <script src="PhysicalCloud-auto.js"></script>
   <script>
     // ═════════════════════════════════════════════════════════════════════
     // PHYSICAL CLOUD — UI ORQUESTRADOR (FASE 1)
@@ -1705,6 +1746,103 @@
         badge.textContent = "Desconectado";
       }
     });
+    // ─── Modal Conectar por ID ───
+    function abrirModalConectarPorId() {
+      const input = $("input-conectar-por-id");
+      const status = $("conectar-por-id-status");
+      if (input) { input.value = "PC-"; input.style.borderColor = "#2a2a2a"; }
+      if (status) { status.textContent = ""; status.style.color = "#9a9a9a"; }
+      $("btn-confirmar-conectar-por-id").disabled = false;
+      $("btn-confirmar-conectar-por-id").textContent = "Conectar";
+      $("modal-conectar-por-id").classList.add("active");
+      setTimeout(() => input?.focus(), 100);
+    }
+
+    function fecharModalConectarPorId() {
+      $("modal-conectar-por-id").classList.remove("active");
+    }
+
+    $("btn-abrir-conectar-por-id")?.addEventListener("click", abrirModalConectarPorId);
+    $("btn-abrir-conectar-por-id-extra")?.addEventListener("click", abrirModalConectarPorId);
+    $("btn-fechar-conectar-por-id")?.addEventListener("click", fecharModalConectarPorId);
+    $("btn-cancelar-conectar-por-id")?.addEventListener("click", fecharModalConectarPorId);
+
+    // Auto-formata o input: sempre "PC-" como prefixo fixo
+    $("input-conectar-por-id")?.addEventListener("input", (ev) => {
+      const input = ev.target;
+      let val = input.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+      if (val.startsWith("PC")) val = val.slice(2);
+      input.value = "PC-" + val.slice(0, 8);
+      input.style.borderColor = "#2a2a2a";
+      const status = $("conectar-por-id-status");
+      if (status) { status.textContent = ""; status.style.color = "#9a9a9a"; }
+    });
+
+    $("input-conectar-por-id")?.addEventListener("keydown", (ev) => {
+      // Impede apagar o "PC-"
+      const input = ev.target;
+      if ((ev.key === "Backspace" || ev.key === "Delete") && input.selectionStart <= 3 && input.selectionEnd <= 3) {
+        ev.preventDefault();
+      }
+      if (ev.key === "Enter") $("btn-confirmar-conectar-por-id")?.click();
+    });
+
+    $("btn-confirmar-conectar-por-id")?.addEventListener("click", async () => {
+      const input = $("input-conectar-por-id");
+      const status = $("conectar-por-id-status");
+      const btn = $("btn-confirmar-conectar-por-id");
+      const id = (input?.value || "").trim().toUpperCase();
+
+      if (!/^PC-[A-Z0-9]{8}$/.test(id)) {
+        if (input) input.style.borderColor = "#ff6b6b";
+        if (status) { status.textContent = "Formato inválido. Ex: PC-AB12CD34"; status.style.color = "#ff6b6b"; }
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = "Conectando...";
+      if (status) { status.textContent = "Buscando dispositivo..."; status.style.color = "#9a9a9a"; }
+
+      // Ouve sucesso (aguardando-aprovacao ou conectado) ou erro
+      const onErro = (ev) => {
+        const { mensagem } = ev.detail || {};
+        if (status) { status.textContent = mensagem || "Dispositivo não encontrado."; status.style.color = "#ff6b6b"; }
+        if (input) input.style.borderColor = "#ff6b6b";
+        btn.disabled = false;
+        btn.textContent = "Tentar novamente";
+        window.removeEventListener("physicalcloud:conectar-por-id-erro", onErro);
+        window.removeEventListener("physicalcloud:sessao-ativa", onSucesso);
+      };
+
+      const onSucesso = () => {
+        window.removeEventListener("physicalcloud:conectar-por-id-erro", onErro);
+        window.removeEventListener("physicalcloud:sessao-ativa", onSucesso);
+        fecharModalConectarPorId();
+      };
+
+      window.addEventListener("physicalcloud:conectar-por-id-erro", onErro, { once: true });
+      window.addEventListener("physicalcloud:sessao-ativa", onSucesso, { once: true });
+
+      const ok = await window.PhysicalCloud?.conectarPorId?.(id);
+      if (!ok) {
+        // A função já mostrou aviso interno
+        window.removeEventListener("physicalcloud:conectar-por-id-erro", onErro);
+        window.removeEventListener("physicalcloud:sessao-ativa", onSucesso);
+        btn.disabled = false;
+        btn.textContent = "Conectar";
+        if (status) { status.textContent = ""; }
+      }
+    });
+
+    // Se o modal estiver aberto e aguardando-aprovacao, mostra mensagem
+    window.addEventListener("physicalcloud:aguardando-id", () => {
+      const status = $("conectar-por-id-status");
+      if (status && $("modal-conectar-por-id")?.classList.contains("active")) {
+        status.textContent = "Dispositivo encontrado! Aguardando aceite automático...";
+        status.style.color = "var(--accent)";
+      }
+    });
+
     // ─── Inicialização ───
     renderizarHistorico();
     atualizarEstadoNuvem();
