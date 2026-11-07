@@ -240,7 +240,6 @@ function salvarAlias(deviceId, novoNome) {
     }
 }
 
-// Substitua a função atualizarListaDispositivos INTEIRA por esta:
 function atualizarListaDispositivos() {
     if (!listaDispositivos || !emptyDispositivos) return;
     
@@ -253,7 +252,10 @@ function atualizarListaDispositivos() {
     } else {
         emptyDispositivos.style.display = "none";
         listaDispositivos.style.display = "";
-        if (deviceActions) deviceActions.style.display = "";
+        if (deviceActions) deviceActions.style.display = "flex"; // Mudou para flex para alinhar os botões
+
+        // Lógica de nomes únicos
+        const nomesUsados = new Map();
 
         for (const [sessaoId, s] of sessoes) {
             const card = document.createElement("div");
@@ -272,17 +274,26 @@ function atualizarListaDispositivos() {
             nomeWrap.style.alignItems = "center";
             nomeWrap.style.gap = "8px";
 
+            // Aplica nome único
+            let nomeExibicao = s.nome;
+            if (nomesUsados.has(nomeExibicao)) {
+                const count = nomesUsados.get(nomeExibicao) + 1;
+                nomesUsados.set(nomeExibicao, count);
+                nomeExibicao = `${nomeExibicao} (${count})`;
+            } else {
+                nomesUsados.set(nomeExibicao, 1);
+            }
+
             const nome = document.createElement("span");
             nome.className = "device-name";
-            nome.textContent = s.nome;
+            nome.textContent = nomeExibicao;
 
-            // O novo botão de Editar Nome
             const btnEdit = document.createElement("button");
             btnEdit.className = "secondary-btn";
             btnEdit.style.padding = "2px 8px";
             btnEdit.style.fontSize = "11px";
             btnEdit.textContent = "Editar nome";
-                        btnEdit.addEventListener("click", (e) => {
+            btnEdit.addEventListener("click", (e) => {
                 e.stopPropagation();
                 /** @type {any} */ (window).abrirModalEditarNome?.(sessaoId, s.nome);
             });
@@ -291,7 +302,6 @@ function atualizarListaDispositivos() {
 
             const detalhes = document.createElement("span");
             detalhes.className = "device-details";
-            // @ts-ignore
             const permissaoTexto = TEXTO_PERMISSAO[s.permissao] || s.permissao;
             detalhes.textContent = s.papel === "servidor"
                 ? `Conectado a você · ${permissaoTexto}`
@@ -299,6 +309,7 @@ function atualizarListaDispositivos() {
 
             info.append(nomeWrap, detalhes);
 
+            // Badge inicial (Online)
             const badge = document.createElement("span");
             badge.className = "device-badge device-badge--online";
             badge.textContent = "Online";
@@ -313,7 +324,7 @@ function atualizarListaDispositivos() {
         }
     }
 
-    // 2. Atualiza Conhecidos (Fora do if/else para aparecer mesmo desconectado)
+    // 2. Atualiza Conhecidos
     if (listaConhecidos && containerConhecidos) {
         const conhecidos = obterDispositivosConhecidos();
         if (conhecidos.length === 0) {
@@ -322,13 +333,11 @@ function atualizarListaDispositivos() {
             containerConhecidos.style.display = "";
             listaConhecidos.innerHTML = "";
             for (const d of conhecidos) {
-                // Se já estiver conectado, não mostra na lista de conhecidos
                 const jaConectado = Array.from(sessoes.values()).some(s => s.deviceId === d.deviceId);
                 if (jaConectado) continue;
 
                 const card = document.createElement("div");
                 card.className = "device-card known-card";
-
                 const info = document.createElement("div");
                 info.className = "device-info";
                 const nome = document.createElement("span");
@@ -364,7 +373,35 @@ function atualizarListaDispositivos() {
             }
         }
     }
+
+    // 3. Controle de Limite Proativo
+    const btnConectarExtra = /** @type {HTMLButtonElement | null} */ (document.getElementById("btn-conectar-extra"));
+    if (btnConectarExtra) {
+        let souServidorCount = 0;
+        let souClienteCount = 0;
+        for (const s of sessoes.values()) {
+            if (s.papel === "servidor") souServidorCount++;
+            if (s.papel === "cliente") souClienteCount++;
+        }
+        
+        // Se atingiu o limite (3 servidores ou 5 clientes)
+        if (souServidorCount >= 3 || souClienteCount >= 5) {
+            btnConectarExtra.disabled = true;
+            btnConectarExtra.title = "Limite de conexões atingido. Desconecte um dispositivo primeiro.";
+        } else {
+            btnConectarExtra.disabled = false;
+            btnConectarExtra.title = "";
+        }
+    }
 }
+document.getElementById("btn-desconectar-todos")?.addEventListener("click", () => {
+    if (confirm("Tem certeza que deseja desconectar todos os dispositivos?")) {
+        const ids = Array.from(sessoes.keys());
+        for (const id of ids) {
+            encerrarSessao(id);
+        }
+    }
+});
 
 // ─── Abrir modal ─────────────────────────────────────────────────────────────
 
@@ -886,7 +923,7 @@ function conectarSocket() {
                     if (data.deviceIdAlvo) {
                         aviso("Restaurando conexão...");
                         enviar({
-                            type: "reconectar",
+                            type: "reconectar-silencioso", // <-- MUDOU AQUI
                             deviceId: obterDeviceId(),
                             deviceIdAlvo: data.deviceIdAlvo,
                             nome: obterNomeDispositivo()
@@ -948,7 +985,7 @@ document.addEventListener("visibilitychange", () => {
  * @param {string} sessaoId
  */
 function encerrarSessao(sessaoId) {
-        try { sessionStorage.removeItem("physicalCloudAutoReconnect"); } catch {}
+       try { sessionStorage.removeItem("physicalCloudAutoReconnect"); } catch {} 
     enviar({ type: "encerrar", sessaoId });
     const existia = sessoes.delete(sessaoId);
     atualizarListaDispositivos();
