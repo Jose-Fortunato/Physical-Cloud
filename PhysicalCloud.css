@@ -159,6 +159,8 @@ body {
 .device-actions {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;   /* ← adicionar isso */
+  gap: 8px;
   margin-bottom: 16px;
 }
 
