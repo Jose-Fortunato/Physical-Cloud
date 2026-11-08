@@ -729,6 +729,9 @@ function tratarMensagem(event) {
     }
     if (!dados || typeof dados !== "object") return;
 
+    // Repassa todas as mensagens para módulos que escutam (ex: PhysicalCloud-auto.js no Android)
+    window.dispatchEvent(new CustomEvent("physicalcloud:mensagem-recebida", { detail: dados }));
+
     switch (dados.type) {
 
         case "codigo-gerado":
@@ -757,7 +760,12 @@ function tratarMensagem(event) {
         case "aguardando-aprovacao":
             aguardandoAprovacao = true;
             sessaoAguardando = String(dados.sessaoId);
-            aviso(dados.via === "reconexao" ? "Reconectando... aguarde aprovação." : "Pedido enviado. Aguarde o outro dispositivo aprovar…");
+            if (dados.via === "id-automatico") {
+                aviso("Dispositivo encontrado! Aguardando aceite automático…");
+                window.dispatchEvent(new CustomEvent("physicalcloud:aguardando-id"));
+            } else {
+                aviso(dados.via === "reconexao" ? "Reconectando... aguarde aprovação." : "Pedido enviado. Aguarde o outro dispositivo aprovar…");
+            }
             break;
 
         case "pedido-conexao":
@@ -886,6 +894,15 @@ function tratarMensagem(event) {
             inputs[0]?.focus();
             break;
 
+        case "conectar-por-id-nao-encontrado":
+            aguardandoAprovacao = false;
+            sessaoAguardando = null;
+            aviso(dados.mensagem || "Dispositivo não encontrado ou offline. Verifique o ID e tente novamente.");
+            window.dispatchEvent(new CustomEvent("physicalcloud:conectar-por-id-erro", {
+                detail: { mensagem: dados.mensagem || "Dispositivo não encontrado ou offline." }
+            }));
+            break;
+
         default:
             console.log("Mensagem não tratada:", dados);
     }
@@ -906,7 +923,8 @@ function conectarSocket() {
         pingInterval = setInterval(() => {
             if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
         }, 240000);
- enviar({ type: "identificar", deviceId: obterDeviceId(), nome: obterNomeDispositivo() });
+        enviar({ type: "identificar", deviceId: obterDeviceId(), nome: obterNomeDispositivo() });
+        window.dispatchEvent(new CustomEvent("physicalcloud:websocket-aberto"));
         if (reconectando) {
             reconectando = false;
             aviso("Reconectado ao servidor.");
@@ -1008,9 +1026,49 @@ window.addEventListener("physicalcloud:aviso-local", (event) => {
     }
 });
 
-/** @type {any} */ (window).PhysicalCloud = { 
-    enviar, sessoes, obterDeviceId, encerrarSessao, aviso, 
-    obterNomeDispositivo, atualizarListaDispositivos, salvarAlias 
+/**
+ * Conecta a um dispositivo em modo automático usando o ID permanente (ex: PC-XXXXXXXX).
+ * O ID é convertido em hash SHA-256 localmente — nunca sai em texto puro.
+ * @param {string} id  ID no formato PC-XXXXXXXX
+ * @returns {Promise<boolean>}
+ */
+async function conectarPorId(id) {
+    if (!id || typeof id !== "string") return false;
+    const idNormalizado = id.trim().toUpperCase();
+    if (!/^PC-[A-Z0-9]{8}$/.test(idNormalizado)) {
+        aviso("Formato inválido. O ID deve ser PC- seguido de 8 letras/números (ex: PC-AB12CD34).");
+        return false;
+    }
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+        aviso("Servidor desconectado. Aguarde a reconexão e tente novamente.");
+        return false;
+    }
+    try {
+        const encoder = new TextEncoder();
+        const data = encoder.encode(idNormalizado);
+        const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        const idHash = hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+
+        aguardandoAprovacao = true;
+        enviar({
+            type: "conectar-por-id",
+            idHash,
+            deviceId: obterDeviceId(),
+            nome: obterNomeDispositivo(),
+        });
+        return true;
+    } catch (err) {
+        console.error("[conectarPorId] Erro ao calcular hash:", err);
+        aviso("Erro ao processar o ID. Tente novamente.");
+        return false;
+    }
+}
+
+/** @type {any} */ (window).PhysicalCloud = {
+    enviar, sessoes, obterDeviceId, encerrarSessao, aviso,
+    obterNomeDispositivo, atualizarListaDispositivos, salvarAlias,
+    conectarPorId
 };
 
 conectarSocket();
