@@ -31,7 +31,7 @@
       </nav>
 
       <button class="nav-item" id="btn-abrir-feedback">★ Avaliar o App</button>
-                 <button class="nav-item" id="btn-abrir-app-futuro">📱Funcionalidade extra dos apps — Conexão automática</button>
+                 <button class="nav-item" id="btn-abrir-app-futuro">🔄 Funcionalidade extra dos apps - Conexão automática</button>
       <button class="nav-item" id="btn-abrir-sobre">☁ Sobre o Physical Cloud</button>
       <button class="nav-item" id="btn-abrir-privacidade">⌑ Privacidade e termos</button>
       <button class="nav-item" id="btn-abrir-downloads">↓ Downloads dos aplicativos</button>
@@ -84,6 +84,9 @@
       <section id="nuvem" class="tab-panel">
         <h1>Envio de arquivos</h1>
         <p class="subtitle">Envie e receba arquivos diretamente entre dispositivos via P2P.</p>
+        <div class="aviso-web" style="margin: 12px 0;">
+          <strong>⚠️ Recebimento de arquivos grandes:</strong> para receber arquivos acima de 128 MB, use o Google Chrome ou o Microsoft Edge atualizados no computador e escolha uma pasta de destino quando solicitado. Em outros navegadores, o recebimento desses arquivos pode não estar disponível.
+        </div>
 
         <div id="nuvem-sem-canal" class="empty-state">
           <p>Nenhum dispositivo conectado.<br>Conecte um dispositivo primeiro.</p>
@@ -275,9 +278,9 @@
     <div class="modal-box pc-auto-modal">
       <button class="modal-close" id="btn-fechar-app-futuro">&times;</button>
       <h2>Conexão automática</h2>
-      <p class="subtitle">Conecte-se a um dispositivo que você autorizou previamente, usando o ID dele.</p>
-      <div class="pc-auto-step"><span>1</span><div><strong>Ative o modo automático no dispositivo que vai receber</strong><p>No app Physical Cloud desse aparelho, habilite o modo automático. O app gera e mantém um ID permanente no próprio dispositivo.</p></div></div>
-      <div class="pc-auto-step"><span>2</span><div><strong>Compartilhe o ID somente com quem você confia</strong><p>O outro dispositivo deve abrir “Conectar por ID” e informar o ID do aparelho que está com o modo automático ativado.</p></div></div>
+      <p class="subtitle"><strong>Funcionalidade exclusiva dos aplicativos Physical Cloud para Android e Desktop.</strong> O modo automático não está disponível na versão Web; nela, este painel serve apenas para explicar o recurso.</p>
+      <div class="pc-auto-step"><span>1</span><div><strong>Ative o modo automático no app do dispositivo que vai receber</strong><p>No aplicativo Physical Cloud instalado nesse aparelho, habilite o modo automático. O app gera e mantém um ID permanente vinculado ao dispositivo.</p></div></div>
+      <div class="pc-auto-step"><span>2</span><div><strong>Use o ID em outro app Physical Cloud</strong><p>No outro dispositivo, abra o aplicativo Physical Cloud, escolha “Conectar por ID” e informe o ID do aparelho que está com o modo automático ativado. Compartilhe esse ID somente com pessoas em quem você confia.</p></div></div>
       <div class="pc-auto-step"><span>3</span><div><strong>A conexão é aceita automaticamente</strong><p>Quando o pedido compatível chega ao dispositivo com o modo automático ativo, ele pode ser aceito sem uma aprovação manual a cada conexão.</p></div></div>
       <div class="pc-info-highlight"><strong>Importante:</strong> o modo automático deve estar ativo no dispositivo de destino. Proteja seu ID: quem tiver acesso a ele poderá tentar iniciar uma conexão. Desative o modo automático se não quiser mais aceitar esse tipo de solicitação.</div>
       <button class="primary-btn" id="btn-app-futuro-ok">Entendi</button>
@@ -306,8 +309,8 @@
       <section class="pc-info-panel" data-info-panel="privacidade">
         <h2>Política de Privacidade</h2><p class="pc-info-updated">Última atualização: 9 de novembro de 2026</p>
         <h3>1. Escopo e funcionamento</h3><p>O Physical Cloud é uma ferramenta de conexão e transferência de arquivos entre dispositivos escolhidos pelos usuários. Não é uma rede social, não seleciona contatos e não se destina a armazenar arquivos em uma nuvem pessoal.</p>
-        <h3>2. Informações utilizadas</h3><p>Para viabilizar as conexões, o aplicativo pode utilizar identificadores técnicos dos dispositivos, nomes informados ou detectados para exibição, códigos temporários de conexão, IDs do modo automático e informações técnicas de sessão. Alguns desses dados são mantidos localmente no dispositivo, por exemplo, nas preferências e no armazenamento local do aplicativo.</p>
-        <p>O servidor de sinalização processa informações necessárias para localizar dispositivos, encaminhar mensagens de sinalização e administrar sessões. No modo automático, o módulo registra no servidor um hash do ID automático, em vez do ID em texto puro. Se você enviar uma avaliação ou feedback, os dados preenchidos serão encaminhados ao serviço utilizado para receber esse feedback.</p>
+        <h3>2. IDs, identificadores e dados técnicos</h3><p>O ID do modo automático (formato PC- seguido de 27 caracteres aleatórios) é gerado no próprio dispositivo e seu texto original permanece no armazenamento local do aparelho. O aplicativo calcula localmente o SHA-256 desse código e envia somente o hash ao servidor de sinalização; o Supabase armazena esse hash para permitir localizar o dispositivo quando alguém informa o código. O código original não é enviado ao Supabase, ao servidor de sinalização nem aos outros usuários. Por meio do backend e do painel do Supabase, o desenvolvedor não recebe o código original e não consegue recuperá-lo de forma prática a partir do hash, graças à entropia dos 27 caracteres aleatórios. Códigos antigos de oito caracteres são substituídos por um novo código ao atualizar/ativar o modo automático.</p>
+        <p>Para encaminhar conexões, o servidor também processa identificadores técnicos aleatórios e pseudônimos dos dispositivos e das sessões, além do nome de exibição escolhido ou detectado. O administrador técnico do serviço pode processar esses identificadores e os hashes necessários ao roteamento; eles não são o ID PC- do modo automático e não permitem recuperar esse código de forma prática. O servidor pode associar temporariamente o hash do ID automático ao dispositivo conectado para entregar o pedido, mas não recebe o código original. Outros usuários não recebem o código PC- nem o hash de consulta. Se você enviar uma avaliação ou feedback, os dados preenchidos serão encaminhados ao serviço utilizado para receber esse feedback.</p>
         <h3>3. Arquivos transferidos</h3><p>O Physical Cloud foi projetado para transferir arquivos diretamente entre os dispositivos conectados. O conteúdo dos arquivos não é enviado ao servidor de sinalização como parte do fluxo normal de transferência. O dispositivo destinatário recebe o arquivo enviado pelo outro dispositivo. O usuário deve considerar que redes, sistemas operacionais, versões e configurações podem afetar o funcionamento da conexão.</p>
         <h3>4. Escolha de conexões e compartilhamento</h3><p>Você decide com quem se conectar, quais solicitações aceitar, quais pastas disponibilizar e quais arquivos enviar. Não compartilhe códigos ou IDs com pessoas desconhecidas. A ativação do modo automático pode permitir que solicitações compatíveis sejam aceitas sem uma confirmação individual, conforme a configuração do recurso.</p>
         <h3>5. Segurança e arquivos maliciosos</h3><p>O Physical Cloud não garante que arquivos enviados por terceiros estejam livres de vírus, malware, spyware ou qualquer conteúdo nocivo. Não há garantia de análise antivírus ou certificação de segurança dos arquivos. Mantenha seu sistema e seu antivírus atualizados e verifique os arquivos recebidos antes de abri-los.</p>
@@ -321,7 +324,7 @@
         <h3>3. Responsabilidade pelo conteúdo</h3><p>O usuário que envia um arquivo é responsável por possuir os direitos e autorizações necessários para compartilhá-lo e por garantir que seu envio seja lícito. O usuário que recebe um arquivo é responsável por decidir se deseja abri-lo, executá-lo, armazená-lo ou removê-lo.</p>
         <h3>4. Vírus, malware e danos</h3><p>O Physical Cloud não inspeciona nem garante a integridade ou a segurança dos arquivos transferidos. Arquivos podem conter vírus, malware, ransomware, spyware ou outros elementos prejudiciais. O Physical Cloud não assume responsabilidade por infecções, perda ou corrupção de dados, danos a dispositivos, indisponibilidade ou prejuízos decorrentes de arquivos enviados por outros usuários ou da decisão de estabelecer uma conexão, na máxima extensão permitida pela legislação aplicável. Nada nestes termos exclui responsabilidades que não possam ser afastadas por lei.</p>
         <h3>5. Uso permitido</h3><p>É proibido utilizar o Physical Cloud para compartilhar conteúdo ilegal, violar direitos de terceiros, distribuir malware, acessar dispositivos sem autorização ou praticar qualquer atividade ilícita. Você não deve tentar comprometer, interromper ou explorar indevidamente a infraestrutura do serviço.</p>
-        <h3>6. Modo automático e permissões</h3><p>Recursos de conexão automática devem ser ativados conscientemente. Ao habilitá-los, você compreende que dispositivos que possuam o identificador correspondente poderão iniciar conexões sem a mesma etapa de aprovação manual. Proteja seus IDs e desative o recurso quando não quiser esse comportamento.</p>
+        <h3>6. Modo automático e permissões</h3><p>Recursos de conexão automática devem ser ativados conscientemente. O código PC- deve ser compartilhado somente com pessoas de confiança: quem o possuir poderá localizar o dispositivo e iniciar uma solicitação compatível. Quando o modo automático está ativo, o aplicativo pode aceitar essa conexão sem uma aprovação manual individual. O código original fica no dispositivo; o serviço utiliza seu hash para localizar o destino. Desative o modo automático e gere um novo código se suspeitar que alguém não autorizado teve acesso a ele.</p>
         <h3>7. Disponibilidade e limitações</h3><p>O serviço é fornecido conforme disponibilidade. Conexões e transferências podem falhar ou ser interrompidas por fatores de rede, hardware, sistema operacional, bateria, permissões ou manutenção. Não garantimos funcionamento ininterrupto, compatibilidade universal ou recuperação de arquivos perdidos.</p>
         <h3>8. Atualizações dos termos</h3><p>Estes termos podem ser alterados. O uso continuado após a publicação de uma nova versão representa aceitação dos termos atualizados, na medida permitida pela legislação aplicável.</p>
       </section>
@@ -362,13 +365,14 @@
       <h2>Conectar por ID</h2>
       <p class="modal-subtitle">
         Digite o ID permanente do dispositivo com o app Physical Cloud em modo automático.
-        O ID tem o formato <strong>PC-XXXXXXXX</strong>.
+        O ID tem o formato <strong>PC-</strong> seguido de 27 caracteres aleatórios.
       </p>
       <input
         type="text"
         id="input-conectar-por-id"
-        maxlength="11"
-        placeholder="PC-XXXXXXXX"
+        maxlength="30"
+        minlength="11"
+        placeholder="PC- + 27 caracteres"
         autocomplete="off"
         spellcheck="false"
         style="
@@ -1674,13 +1678,20 @@
           const nome = item.caminhoRelativo || item.nome || "arquivo";
           const dataFormatada = new Date(item.data).toLocaleString('pt-BR', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
           
-          div.innerHTML = `
-            <span class="recebido-icone">✔</span>
-            <div class="recebido-info">
-              <span class="recebido-nome" title="${nome}">${nome}</span>
-              <span class="recebido-detalhe">${formatarTamanho(item.tamanho)} · ${dataFormatada}</span>
-            </div>
-          `;
+          const icone = document.createElement("span");
+          icone.className = "recebido-icone";
+          icone.textContent = "✔";
+          const info = document.createElement("div");
+          info.className = "recebido-info";
+          const nomeEl = document.createElement("span");
+          nomeEl.className = "recebido-nome";
+          nomeEl.title = String(nome);
+          nomeEl.textContent = String(nome);
+          const detalhe = document.createElement("span");
+          detalhe.className = "recebido-detalhe";
+          detalhe.textContent = `${formatarTamanho(item.tamanho)} · ${dataFormatada}`;
+          info.append(nomeEl, detalhe);
+          div.append(icone, info);
           el.appendChild(div);
         }
       };
@@ -1754,7 +1765,7 @@
     function abrirModalConectarPorId() {
       const input = $("input-conectar-por-id");
       const status = $("conectar-por-id-status");
-      if (input) { input.value = "PC-"; input.style.borderColor = "#2a2a2a"; }
+      if (input) { input.value = ""; input.style.borderColor = "#2a2a2a"; }
       if (status) { status.textContent = ""; status.style.color = "#9a9a9a"; }
       $("btn-confirmar-conectar-por-id").disabled = false;
       $("btn-confirmar-conectar-por-id").textContent = "Conectar";
@@ -1771,23 +1782,16 @@
     $("btn-fechar-conectar-por-id")?.addEventListener("click", fecharModalConectarPorId);
     $("btn-cancelar-conectar-por-id")?.addEventListener("click", fecharModalConectarPorId);
 
-    // Auto-formata o input: sempre "PC-" como prefixo fixo
+    // Aceita o ID com ou sem o prefixo PC-; o campo comporta os 30 caracteres.
     $("input-conectar-por-id")?.addEventListener("input", (ev) => {
       const input = ev.target;
-      let val = input.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
-      if (val.startsWith("PC")) val = val.slice(2);
-      input.value = "PC-" + val.slice(0, 8);
+      input.value = input.value.toUpperCase().replace(/[^A-Z0-9-]/g, "").slice(0, 30);
       input.style.borderColor = "#2a2a2a";
       const status = $("conectar-por-id-status");
       if (status) { status.textContent = ""; status.style.color = "#9a9a9a"; }
     });
 
     $("input-conectar-por-id")?.addEventListener("keydown", (ev) => {
-      // Impede apagar o "PC-"
-      const input = ev.target;
-      if ((ev.key === "Backspace" || ev.key === "Delete") && input.selectionStart <= 3 && input.selectionEnd <= 3) {
-        ev.preventDefault();
-      }
       if (ev.key === "Enter") $("btn-confirmar-conectar-por-id")?.click();
     });
 
@@ -1795,11 +1799,20 @@
       const input = $("input-conectar-por-id");
       const status = $("conectar-por-id-status");
       const btn = $("btn-confirmar-conectar-por-id");
-      const id = (input?.value || "").trim().toUpperCase();
+      const digitado = (input?.value || "").trim().toUpperCase().replace(/\s+/g, "");
+      const corpoId = (digitado.startsWith("PC-") ? digitado.slice(3) : digitado).replace(/[^A-Z0-9]/g, "");
+      const id = "PC-" + corpoId;
 
-      if (!/^PC-[A-Z0-9]{8}$/.test(id)) {
+      if (!/^PC-[A-Z0-9]{27}$/.test(id)) {
         if (input) input.style.borderColor = "#ff6b6b";
-        if (status) { status.textContent = "Formato inválido. Ex: PC-AB12CD34"; status.style.color = "#ff6b6b"; }
+        if (status) { status.textContent = "Formato inválido. Use PC- seguido dos 27 caracteres do ID."; status.style.color = "#ff6b6b"; }
+        return;
+      }
+
+      const AUTO = window.PhysicalCloudAuto;
+      if (AUTO?.modoAutoAtivo?.() && AUTO?.obterIdAuto?.() === id) {
+        if (status) { status.textContent = "Você não pode conectar ao próprio dispositivo."; status.style.color = "#ff6b6b"; }
+        if (input) input.style.borderColor = "#ff6b6b";
         return;
       }
 
