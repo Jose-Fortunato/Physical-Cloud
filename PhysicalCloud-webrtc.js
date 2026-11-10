@@ -19,6 +19,14 @@ const STUN_SERVERS = [
 const NOME_CANAL = "physicalcloud";
 const TIMEOUT_DESCONEXAO_MS = 2000;
 
+function obterIceServersConfigurados() {
+    const turnServers = Array.isArray(/** @type {any} */ (window).PhysicalCloudIceServers) ? /** @type {any} */ (window).PhysicalCloudIceServers : [];
+    const seguros = turnServers.filter((/** @type {{ urls: string | any[]; username: any; credential: any; }} */ item) => item &&
+        (typeof item.urls === "string" || (Array.isArray(item.urls) && item.urls.length > 0)) &&
+        typeof item.username === "string" && typeof item.credential === "string");
+    return [...STUN_SERVERS, ...seguros];
+}
+
 /**
  * @typedef {{
  *   pc: RTCPeerConnection,
@@ -268,7 +276,7 @@ function configurarDc(dc, sessaoId) {
 async function iniciarComoCliente(sessaoId) {
     if (peers.has(sessaoId)) return;
 
-    const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
+    const pc = new RTCPeerConnection({ iceServers: obterIceServersConfigurados() });
     /** @type {EntradaPeer} */
     const entrada = {
         pc, dc: null, estado: "iniciando", sessaoId,
@@ -300,7 +308,7 @@ async function iniciarComoCliente(sessaoId) {
 function prepararComoServidor(sessaoId) {
     if (peers.has(sessaoId)) return;
 
-    const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
+    const pc = new RTCPeerConnection({ iceServers: obterIceServersConfigurados() });
     /** @type {EntradaPeer} */
     const entrada = {
         pc, dc: null, estado: "aguardando-offer", sessaoId,

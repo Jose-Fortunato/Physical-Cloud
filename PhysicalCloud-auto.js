@@ -3,7 +3,7 @@
 // Funciona também em navegador (puro JS, sem dependência do bridge Android)
 //
 // Responsabilidades:
-//   1. Gerar e persistir o ID permanente PC-XXXXXXXX em localStorage
+//   1. Gerar e persistir um ID permanente PC- com 27 caracteres aleatórios em localStorage
 //   2. Calcular o hash SHA-256 do ID via crypto.subtle (nunca expõe o ID puro)
 //   3. Registrar o hash no servidor quando o WebSocket abre
 //   4. Auto-aceitar pedidos de conexão do tipo "pedido-automatico"
@@ -21,15 +21,24 @@
 
     function gerarIdAuto() {
         const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        const bytes = new Uint8Array(8);
-        crypto.getRandomValues(bytes);
-        return "PC-" + Array.from(bytes).map(b => chars[b % chars.length]).join("");
+        const out = [];
+        while (out.length < 27) {
+            const bytes = new Uint8Array(32);
+            crypto.getRandomValues(bytes);
+            for (const b of bytes) {
+                if (b < Math.floor(256 / chars.length) * chars.length) {
+                    out.push(chars[b % chars.length]);
+                    if (out.length === 27) break;
+                }
+            }
+        }
+        return "PC-" + out.join("");
     }
 
     function obterIdAuto() {
         try {
             let id = localStorage.getItem(CHAVE_ID_AUTO);
-            if (id && /^PC-[A-Z0-9]{8}$/.test(id)) return id;
+            if (id && /^PC-[A-Z0-9]{27}$/.test(id)) return id;
             id = gerarIdAuto();
             localStorage.setItem(CHAVE_ID_AUTO, id);
             return id;
@@ -56,14 +65,30 @@
         return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
     }
 
+    // Migra códigos legados de 8 caracteres para 27 caracteres aleatórios.
+    try {
+        if (modoAutoAtivo()) {
+            const antigo = localStorage.getItem(CHAVE_ID_AUTO);
+            if (antigo && /^PC-[A-Z0-9]{8}$/.test(antigo)) {
+                localStorage.setItem("physicalCloudAutoIdLegacyToRevoke", antigo);
+                localStorage.setItem(CHAVE_ID_AUTO, gerarIdAuto());
+            }
+        }
+    } catch {}
+
     // ─── Registro no servidor ────────────────────────────────────────────────
 
     async function registrarNoServidor() {
         if (!modoAutoAtivo()) return;
         const id = obterIdAuto();
         try {
-            const idHash = await calcularHash(id);
+            const antigo = localStorage.getItem("physicalCloudAutoIdLegacyToRevoke");
             const api = /** @type {any} */ (window).PhysicalCloud;
+            if (antigo && api && typeof api.enviar === "function") {
+                api.enviar({ type: "desregistrar-id-automatico", idHash: await calcularHash(antigo) });
+                localStorage.removeItem("physicalCloudAutoIdLegacyToRevoke");
+            }
+            const idHash = await calcularHash(id);
             if (!api || typeof api.enviar !== "function") return;
             api.enviar({ type: "registrar-id-automatico", idHash });
             console.log("[AutoMode] ID registrado no servidor (hash).");
@@ -96,9 +121,8 @@
     // ─── Escuta eventos do PhysicalCloud.js ─────────────────────────────────
 
     // Registra no servidor toda vez que o WebSocket abre (ou reconecta)
-    window.addEventListener("physicalcloud:websocket-aberto", () => {
-        registrarNoServidor();
-    });
+    window.addEventListener("physicalcloud:websocket-aberto", registrarNoServidor);
+    if (window.PhysicalCloud?.isSocketOpen?.()) registrarNoServidor();
 
     // Recebe mensagens do servidor via event bus
     window.addEventListener("physicalcloud:mensagem-recebida", (event) => {
