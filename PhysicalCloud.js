@@ -36,6 +36,54 @@ let timerReconexao = null;
 let tentativasReconexao = 0;
 let reconectando = false;
 
+
+// Credencial persistente emitida pelo servidor (32 bytes aleatórios, base64url).
+// O deviceId é público; somente este token comprova a posse da identidade.
+const AUTH_TOKEN_STORAGE_KEY = "physicalCloudDeviceAuthToken";
+/** @type {string | null} */
+let authTokenMemoria = null;
+let identidadeAutenticada = false;
+let bloqueioIdentidade = false;
+
+function obterTokenAutenticacao() {
+    if (authTokenMemoria) return authTokenMemoria;
+    try {
+        const salvo = localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+        if (salvo && /^[A-Za-z0-9_-]{43}$/.test(salvo)) {
+            authTokenMemoria = salvo;
+            return salvo;
+        }
+        if (salvo) localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+    } catch { /* O servidor recusará a conexão se a credencial não puder ser persistida. */ }
+    return null;
+}
+
+function verificarArmazenamentoAutenticacao() {
+    const chaveTeste = `${AUTH_TOKEN_STORAGE_KEY}:teste`;
+    try {
+        localStorage.setItem(chaveTeste, "1");
+        const disponivel = localStorage.getItem(chaveTeste) === "1";
+        localStorage.removeItem(chaveTeste);
+        return disponivel;
+    } catch {
+        try { localStorage.removeItem(chaveTeste); } catch {}
+        return false;
+    }
+}
+
+/** @param {string} token */
+function salvarTokenAutenticacao(token) {
+    if (typeof token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(token)) return false;
+    try {
+        localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+        if (localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) !== token) return false;
+        authTokenMemoria = token;
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 // ─── Identificação do dispositivo ────────────────────────────────────────────
 
 /** @type {string | null} */
@@ -152,6 +200,8 @@ function abrirModalEditarNome(sessaoId) {
  */
 function enviar(obj) {
     if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    // Apenas a identificação inicial pode ser enviada antes da prova de posse.
+    if (!identidadeAutenticada && obj?.type !== "identificar") return false;
     socket.send(JSON.stringify(obj));
     return true;
 }
@@ -514,7 +564,7 @@ function iniciarContagem(segundos) {
 
 // ─── Pedidos de conexão ─────────────────────────────────────────────────────
 
-/** @type {{sessaoId: string, nome: string, chegouEm: number, via: string}[]} */
+/** @type {{sessaoId: string, nome: string, chegouEm: number, expiraEm: number, via: string}[]} */
 const filaPedidos = [];
 /** @type {HTMLElement | null} */
 let dialogoPedido = null;
@@ -530,8 +580,14 @@ function fecharDialogoPedido() {
 
 /** @param {boolean} aceitar @param {string} permissao */
 function responderPedido(aceitar, permissao) {
-    const pedido = filaPedidos.shift();
+    const pedido = filaPedidos[0];
     if (!pedido) return;
+    if (pedido.expiraEm && Date.now() >= pedido.expiraEm) {
+        removerPedido(pedido.sessaoId);
+        aviso("Este pedido já expirou. Solicite uma nova conexão.");
+        return;
+    }
+    filaPedidos.shift();
     enviar({ type: "responder-pedido", sessaoId: pedido.sessaoId, aceitar, permissao });
     fecharDialogoPedido();
     mostrarProximoPedido();
@@ -597,11 +653,19 @@ function mostrarProximoPedido() {
     document.body.appendChild(fundo);
     dialogoPedido = fundo;
     const atualizar = () => {
-        const restante = Math.max(0, TEMPO_PEDIDO_S - Math.floor((Date.now() - pedido.chegouEm) / 1000));
-        contagem.textContent = `Expira em ${restante}s`;
+        const restante = Math.max(0, Math.ceil(((pedido.expiraEm || (pedido.chegouEm + TEMPO_PEDIDO_S * 1000)) - Date.now()) / 1000));
+        contagem.textContent = restante > 0 ? `Expira em ${restante}s` : "Pedido expirado. Aguardando confirmação do servidor…";
+        btnPermitir.disabled = restante === 0;
+        btnRecusar.disabled = restante === 0;
+        if (restante === 0) {
+            btnPermitir.style.opacity = "0.45";
+            btnRecusar.style.opacity = "0.45";
+            if (timerPedido) clearInterval(timerPedido);
+            timerPedido = null;
+        }
     };
     atualizar();
-    timerPedido = setInterval(atualizar, 1000);
+    if (pedido.expiraEm > Date.now()) timerPedido = setInterval(atualizar, 1000);
 }
 
 /**
@@ -734,6 +798,67 @@ function tratarMensagem(event) {
 
     switch (dados.type) {
 
+        case "identidade-autenticada": {
+            if (dados.authToken && !salvarTokenAutenticacao(dados.authToken)) {
+                bloqueioIdentidade = true;
+                aviso("Não foi possível salvar a credencial deste dispositivo. Habilite o armazenamento local do navegador e abra o Physical Cloud novamente.");
+                socket?.close(4004, "Credencial não pôde ser salva");
+                break;
+            }
+            if (!obterTokenAutenticacao()) {
+                bloqueioIdentidade = true;
+                aviso("A credencial deste dispositivo não está disponível no armazenamento local. Não use navegação anônima nem limpe os dados do site.");
+                socket?.close(4004, "Credencial ausente");
+                break;
+            }
+            identidadeAutenticada = true;
+            // @ts-ignore
+            window.PhysicalCloudIceServers = Array.isArray(dados.turnServers) ? dados.turnServers : [];
+            // @ts-ignore
+            window.dispatchEvent(new CustomEvent("physicalcloud:ice-config-disponivel", { detail: { turnServers: window.PhysicalCloudIceServers } }));
+            window.dispatchEvent(new CustomEvent("physicalcloud:websocket-aberto"));
+            if (reconectando) {
+                reconectando = false;
+                aviso("Reconectado ao servidor.");
+            }
+            if (souServidor) {
+                abrirModalAoGerar = true;
+                enviar({ type: "tornar-servidor", deviceId: obterDeviceId(), nome: obterNomeDispositivo() });
+            }
+            // Só restaura sessões depois de o servidor autenticar a identidade.
+            setTimeout(() => {
+                try {
+                    const auto = sessionStorage.getItem("physicalCloudAutoReconnect");
+                    if (auto) {
+                        const data = JSON.parse(auto);
+                        if (data.deviceIdAlvo) {
+                            aviso("Restaurando conexão...");
+                            enviar({
+                                type: "reconectar-silencioso",
+                                deviceId: obterDeviceId(),
+                                deviceIdAlvo: data.deviceIdAlvo,
+                                nome: obterNomeDispositivo()
+                            });
+                        }
+                    }
+                } catch {}
+            }, 1000);
+            break;
+        }
+
+        case "identidade-recusada":
+            identidadeAutenticada = false;
+            bloqueioIdentidade = true;
+            aviso(dados.mensagem || "O servidor não reconheceu a credencial deste dispositivo. Consulte as instruções de recuperação no pacote.");
+            socket?.close(4003, "Identidade não autenticada");
+            break;
+
+        case "identidade-indisponivel":
+            identidadeAutenticada = false;
+            aviso(dados.mensagem || "Não foi possível verificar a identidade no servidor. Tentando novamente.");
+            socket?.close(1011, "Verificação de identidade indisponível");
+            break;
+
         case "codigo-gerado":
             if (!souServidor) return;
             meuCodigoServidor = String(dados.codigo);
@@ -768,16 +893,23 @@ function tratarMensagem(event) {
             }
             break;
 
-        case "pedido-conexao":
-           
+        case "pedido-conexao": {
+            const sessaoId = String(dados.sessaoId || "");
+            if (!sessaoId || filaPedidos.some(p => p.sessaoId === sessaoId)) break;
+            const agora = Date.now();
+            const expiraEm = Number.isSafeInteger(Number(dados.expiraEm))
+                ? Number(dados.expiraEm) : agora + Math.max(1000, Number(dados.validadeMs) || TEMPO_PEDIDO_S * 1000);
+            if (expiraEm <= agora) break;
             filaPedidos.push({
-                sessaoId: String(dados.sessaoId),
+                sessaoId,
                 nome: String(dados.nome || "Dispositivo"),
-                chegouEm: Date.now(),
+                chegouEm: agora,
+                expiraEm,
                 via: String(dados.via || "codigo"),
             });
             mostrarProximoPedido();
             break;
+        }
 
                 case "conectado": {
                         try {
@@ -887,11 +1019,21 @@ function tratarMensagem(event) {
             break;
 
         case "erro":
+            // O evento geral já foi publicado no início de tratarMensagem.
+            // Erros correlacionados pertencem ao modo automático e não devem
+            // limpar um pedido normal de conexão que esteja em andamento.
+            if (typeof dados.requestId === "string" && dados.requestId.length >= 8) break;
             aguardandoAprovacao = false;
             sessaoAguardando = null;
             aviso(dados.mensagem || "Não foi possível conectar.");
             limparInputs();
             inputs[0]?.focus();
+            break;
+
+        case "pedido-automatico":
+        case "registrar-id-automatico-ok":
+        case "desregistrar-id-automatico-ok":
+            // Já foram encaminhados pelo evento geral acima.
             break;
 
         case "conectar-por-id-nao-encontrado":
@@ -911,6 +1053,7 @@ function tratarMensagem(event) {
 // ─── Conexão WebSocket ────────────────────────────────────────────────────────
 
 function conectarSocket() {
+    if (bloqueioIdentidade) return;
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
     if (timerReconexao) clearTimeout(timerReconexao);
     timerReconexao = null;
@@ -920,36 +1063,23 @@ function conectarSocket() {
 
     ws.addEventListener("open", () => {
         tentativasReconexao = 0;
+        identidadeAutenticada = false;
+        if (!verificarArmazenamentoAutenticacao()) {
+            bloqueioIdentidade = true;
+            aviso("O armazenamento local está bloqueado. Ative o armazenamento do site/app para registrar a credencial segura deste dispositivo.");
+            ws.close(4004, "Armazenamento local indisponível");
+            return;
+        }
         pingInterval = setInterval(() => {
             if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
         }, 240000);
-        enviar({ type: "identificar", deviceId: obterDeviceId(), nome: obterNomeDispositivo() });
-        window.dispatchEvent(new CustomEvent("physicalcloud:websocket-aberto"));
-        if (reconectando) {
-            reconectando = false;
-            aviso("Reconectado ao servidor.");
-        }
-        if (souServidor) {
-            abrirModalAoGerar = true;
-            enviar({ type: "tornar-servidor", deviceId: obterDeviceId(), nome: obterNomeDispositivo() });
-        }
-                setTimeout(() => {
-            try {
-                const auto = sessionStorage.getItem("physicalCloudAutoReconnect");
-                if (auto) {
-                    const data = JSON.parse(auto);
-                    if (data.deviceIdAlvo) {
-                        aviso("Restaurando conexão...");
-                        enviar({
-                            type: "reconectar-silencioso", // <-- MUDOU AQUI
-                            deviceId: obterDeviceId(),
-                            deviceIdAlvo: data.deviceIdAlvo,
-                            nome: obterNomeDispositivo()
-                        });
-                    }
-                }
-            } catch {}
-        }, 1000);
+        enviar({
+            type: "identificar",
+            deviceId: obterDeviceId(),
+            nome: obterNomeDispositivo(),
+            authVersion: 1,
+            authToken: obterTokenAutenticacao()
+        });
     });
 
     ws.addEventListener("message", tratarMensagem);
@@ -957,6 +1087,7 @@ function conectarSocket() {
 
     ws.addEventListener("close", event => {
         if (socket !== ws) return;
+        identidadeAutenticada = false;
         if (pingInterval) clearInterval(pingInterval);
         pingInterval = null;
 
@@ -976,6 +1107,7 @@ function conectarSocket() {
         aguardandoAprovacao = false;
         sessaoAguardando = null;
 
+        if (event.code === 4003 || event.code === 4004 || bloqueioIdentidade) return;
         const recusado = event.code === 1008;
         const espera = recusado ? 30000 : Math.min(1000 * 2 ** tentativasReconexao, 15000);
         if (tentativasReconexao === 0 || recusado) {
@@ -1012,6 +1144,11 @@ function encerrarSessao(sessaoId) {
     }
 }
 
+window.addEventListener("physicalcloud:aviso", (event) => {
+    const mensagem = /** @type {CustomEvent} */ (event).detail?.mensagem;
+    if (typeof mensagem === "string" && mensagem) aviso(mensagem);
+});
+
 window.addEventListener("physicalcloud:aviso-local", (event) => {
     const { sessaoId, motivo } = /** @type {CustomEvent} */ (event).detail;
     const s = sessaoId ? sessoes.get(String(sessaoId)) : undefined;
@@ -1027,16 +1164,16 @@ window.addEventListener("physicalcloud:aviso-local", (event) => {
 });
 
 /**
- * Conecta a um dispositivo em modo automático usando o ID permanente (ex: PC-XXXXXXXX).
+ * Conecta a um dispositivo em modo automático usando o ID permanente (PC- + 27 caracteres; aceita códigos legados de 8 caracteres).
  * O ID é convertido em hash SHA-256 localmente — nunca sai em texto puro.
- * @param {string} id  ID no formato PC-XXXXXXXX
+ * @param {string} id  ID no formato PC- seguido de 8 a 27 caracteres
  * @returns {Promise<boolean>}
  */
 async function conectarPorId(id) {
     if (!id || typeof id !== "string") return false;
     const idNormalizado = id.trim().toUpperCase();
-    if (!/^PC-[A-Z0-9]{8}$/.test(idNormalizado)) {
-        aviso("Formato inválido. O ID deve ser PC- seguido de 8 letras/números (ex: PC-AB12CD34).");
+    if (!/^PC-[A-Z0-9]{8,27}$/.test(idNormalizado)) {
+        aviso("Formato inválido. O ID deve ser PC- seguido de 8 a 27 caracteres.");
         return false;
     }
     if (!socket || socket.readyState !== WebSocket.OPEN) {
@@ -1068,6 +1205,7 @@ async function conectarPorId(id) {
 /** @type {any} */ (window).PhysicalCloud = {
     enviar, sessoes, obterDeviceId, encerrarSessao, aviso,
     obterNomeDispositivo, atualizarListaDispositivos, salvarAlias,
+    isSocketOpen: () => !!socket && socket.readyState === WebSocket.OPEN,
     conectarPorId
 };
 

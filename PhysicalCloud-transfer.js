@@ -28,6 +28,10 @@ class TransferError extends Error {
 }
 
 /** @type {Map<string, RTCDataChannel>} */ const canais = new Map();
+const peersSuportamChunkHash = new Set();
+const peersSuportamTamanhoDesconhecido = new Set();
+const LIMITE_FALLBACK_RAM = 128 * 1024 * 1024;
+const LIMITE_ARQUIVO_TAMANHO_DESCONHECIDO = 1024 * 1024 * 1024 * 1024; // 1 TiB
 /** @type {Map<string, any>} */ const transferencias = new Map();
 /** @type {Map<string, Array<{ file: File, operacaoId: string, caminhoRelativo: string }>>} */ const filas = new Map();
 /** @type {Map<string, string>} */ const ativasEnvio = new Map();
@@ -43,6 +47,104 @@ class TransferError extends Error {
 const aguardandoAceitacaoMap = new Map();
 const aguardandoOperacaoMap = new Map();
 const timeoutsOk = new Map();
+
+
+// Reserva nomes na sessão atual para impedir que duas transferências concorrentes
+// do próprio app escolham o mesmo destino. A API do navegador não oferece criação
+// exclusiva portátil; a verificação + reserva evita a sobrescrita em uso normal.
+const nomesDestinoReservados = new WeakMap();
+
+// @ts-ignore
+function nomeComSufixoColisao(nome, indice) {
+    if (indice === 0) return nome;
+    const ponto = nome.lastIndexOf(".");
+    const base = ponto > 0 ? nome.slice(0, ponto) : nome;
+    const ext = ponto > 0 ? nome.slice(ponto) : "";
+    return `${base} (${indice})${ext}`;
+}
+
+// @ts-ignore
+function liberarReservaDestino(rec) {
+    if (!rec || typeof rec.liberarNomeDestino !== "function") return;
+    try { rec.liberarNomeDestino(); } catch {}
+    rec.liberarNomeDestino = null;
+}
+
+// @ts-ignore
+function limparRecebimentoSemArquivo(sessaoId, rec) {
+    liberarReservaDestino(rec);
+    recebimentos.delete(sessaoId);
+    ativasRecebimento.delete(sessaoId);
+    if (Array.isArray(rec?.chunks)) rec.chunks.length = 0;
+}
+
+// @ts-ignore
+async function descartarDestinoCriadoAposFalha(dir, destino, writerHandle = null) {
+    // @ts-ignore
+    if (writerHandle) { try { await writerHandle.abort(); } catch {} }
+    if (!destino) return true;
+    let removido = false;
+    try { await dir.removeEntry(destino.nome); removido = true; }
+    catch (erro) { console.warn("Não foi possível remover a entrada criada para a gravação que falhou:", erro); }
+    finally { try { destino.liberar(); } catch {} }
+    return removido;
+}
+
+// @ts-ignore
+async function obterHandleDestinoSemSobrescrever(dir, nomeSolicitado) {
+    let reservados = nomesDestinoReservados.get(dir);
+    if (!reservados) { reservados = new Set(); nomesDestinoReservados.set(dir, reservados); }
+
+    for (let indice = 0; indice < 10000; indice++) {
+        const candidato = nomeComSufixoColisao(nomeSolicitado, indice);
+        if (!candidato || candidato === "." || candidato === ".." || candidato.includes("/") || candidato.includes("\\")) {
+            throw new Error("Nome de arquivo de destino inválido.");
+        }
+        if (reservados.has(candidato)) continue;
+        reservados.add(candidato);
+
+        const criarSeLivre = async () => {
+            try {
+                await dir.getFileHandle(candidato);
+                return null; // Um arquivo com esse nome já existe.
+            } catch (error) {
+                // @ts-ignore
+                if (error?.name === "TypeMismatchError") return null; // Já existe uma pasta com esse nome.
+                // @ts-ignore
+                if (error?.name !== "NotFoundError") throw error;
+            }
+            // navigator.locks coordena outras abas da mesma origem. A reserva local
+            // cobre navegadores sem Web Locks e concorrência dentro desta instância.
+            try {
+                await dir.getFileHandle(candidato);
+                return null;
+            } catch (error) {
+                // @ts-ignore
+                if (error?.name === "TypeMismatchError") return null;
+                // @ts-ignore
+                if (error?.name !== "NotFoundError") throw error;
+            }
+            return await dir.getFileHandle(candidato, { create: true });
+        };
+
+        try {
+            const handle = navigator.locks?.request
+                ? await navigator.locks.request(`physicalcloud-destino-${candidato}`, criarSeLivre)
+                : await criarSeLivre();
+            if (!handle) {
+                reservados.delete(candidato);
+                continue;
+            }
+            return { handle, nome: candidato, liberar: () => reservados.delete(candidato) };
+        } catch (error) {
+            reservados.delete(candidato);
+            // @ts-ignore
+            if (error?.name === "TypeMismatchError") continue;
+            throw error;
+        }
+    }
+    throw new Error("Não foi possível encontrar um nome de destino que não exista.");
+}
 
 // ═══ FASE 1 / Bug #10 ═══
 /** @type {Map<string, Set<string>>} */
@@ -80,17 +182,108 @@ function limparPullsAguardando(sessaoId) {
 // ─── Utilidades ───
 
 function gerarTransferId() {
-    if (crypto.randomUUID) return crypto.randomUUID();
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
     const b = new Uint8Array(16);
-    crypto.getRandomValues(b);
-    return Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+    if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+        crypto.getRandomValues(b);
+    } else {
+        // Último fallback para WebViews antigos sem randomUUID/getRandomValues.
+        // O formato canônico permanece compatível com a validação do receptor.
+        for (let i = 0; i < b.length; i++) b[i] = Math.floor(Math.random() * 256);
+    }
+    b[6] = (b[6] & 0x0f) | 0x40; // UUID v4
+    b[8] = (b[8] & 0x3f) | 0x80;
+    const hex = Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-/** @param {BufferSource} buffer */
-async function calcularSha256(buffer) {
-    const hash = await crypto.subtle.digest("SHA-256", buffer);
-    return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, "0")).join("");
+// SHA-256 incremental: calcula o hash durante a leitura/gravação dos blocos.
+// Evita crypto.subtle.digest(ArrayBuffer), que exigiria carregar o arquivo inteiro.
+class Sha256Incremental {
+    constructor() {
+        this.h = new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]);
+        this.k = Sha256Incremental.K;
+        this.buffer = new Uint8Array(64);
+        this.bufferLength = 0;
+        this.totalBytes = 0;
+        this.finished = false;
+    }
+    static K = new Uint32Array([
+        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+    ]);
+    // @ts-ignore
+    update(input) {
+        if (this.finished) throw new Error("SHA-256 já finalizado");
+        const data = input instanceof Uint8Array ? input : new Uint8Array(input);
+        this.totalBytes += data.byteLength;
+        let offset = 0;
+        if (this.bufferLength) {
+            const take = Math.min(64 - this.bufferLength, data.length);
+            this.buffer.set(data.subarray(0, take), this.bufferLength);
+            this.bufferLength += take;
+            offset += take;
+            if (this.bufferLength === 64) { this._block(this.buffer); this.bufferLength = 0; }
+        }
+        while (offset + 64 <= data.length) { this._block(data.subarray(offset, offset + 64)); offset += 64; }
+        if (offset < data.length) { this.buffer.set(data.subarray(offset), 0); this.bufferLength = data.length - offset; }
+        return this;
+    }
+    // @ts-ignore
+    _block(block) {
+        const w = new Uint32Array(64);
+        for (let i = 0; i < 16; i++) {
+            const j = i * 4;
+            w[i] = ((block[j] << 24) | (block[j + 1] << 16) | (block[j + 2] << 8) | block[j + 3]) >>> 0;
+        }
+        for (let i = 16; i < 64; i++) {
+            const x = w[i - 15], y = w[i - 2];
+            const s0 = (this._rotr(x, 7) ^ this._rotr(x, 18) ^ (x >>> 3)) >>> 0;
+            const s1 = (this._rotr(y, 17) ^ this._rotr(y, 19) ^ (y >>> 10)) >>> 0;
+            w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+        }
+        let [a,b,c,d,e,f,g,h] = this.h;
+        for (let i = 0; i < 64; i++) {
+            const S1 = (this._rotr(e, 6) ^ this._rotr(e, 11) ^ this._rotr(e, 25)) >>> 0;
+            const ch = ((e & f) ^ (~e & g)) >>> 0;
+            const t1 = (h + S1 + ch + this.k[i] + w[i]) >>> 0;
+            const S0 = (this._rotr(a, 2) ^ this._rotr(a, 13) ^ this._rotr(a, 22)) >>> 0;
+            const maj = ((a & b) ^ (a & c) ^ (b & c)) >>> 0;
+            const t2 = (S0 + maj) >>> 0;
+            h=g; g=f; f=e; e=(d+t1)>>>0; d=c; c=b; b=a; a=(t1+t2)>>>0;
+        }
+        this.h[0]=(this.h[0]+a)>>>0; this.h[1]=(this.h[1]+b)>>>0;
+        this.h[2]=(this.h[2]+c)>>>0; this.h[3]=(this.h[3]+d)>>>0;
+        this.h[4]=(this.h[4]+e)>>>0; this.h[5]=(this.h[5]+f)>>>0;
+        this.h[6]=(this.h[6]+g)>>>0; this.h[7]=(this.h[7]+h)>>>0;
+    }
+    // @ts-ignore
+    _rotr(x, n) { return (x >>> n) | (x << (32 - n)); }
+    digest() {
+        if (this.finished) throw new Error("SHA-256 já finalizado");
+        // Comprimento em bits (64 bits, big-endian) sem BigInt, para WebViews antigos.
+        const bitsHigh = Math.floor(this.totalBytes / 0x20000000) >>> 0;
+        const bitsLow = ((this.totalBytes % 0x20000000) * 8) >>> 0;
+        const tail = new Uint8Array(128);
+        tail.set(this.buffer.subarray(0, this.bufferLength));
+        tail[this.bufferLength] = 0x80;
+        const padded = this.bufferLength < 56 ? 64 : 128;
+        const view = new DataView(tail.buffer);
+        view.setUint32(padded - 8, bitsHigh);
+        view.setUint32(padded - 4, bitsLow);
+        this._block(tail.subarray(0, 64));
+        if (padded === 128) this._block(tail.subarray(64, 128));
+        this.finished = true;
+        return Array.from(this.h).map(x => x.toString(16).padStart(8, "0")).join("");
+    }
 }
+
 
 /** @param {string} tipo @param {any} detalhe */
 function emitir(tipo, detalhe) {
@@ -118,6 +311,26 @@ function emitirCancelamento(entrada, sessaoId) {
 // FASE 1: helpers de detecção de ambiente
 function temDirectoryPicker() {
     return typeof (/** @type {any} */ (window)).showDirectoryPicker === "function";
+}
+
+// Para peers atualizados: SHA-256 nativo por bloco e um resumo incremental dos
+// digests ordenados. O acumulador processa apenas 32 bytes por bloco, não o arquivo.
+class Sha256ChunkIntegrity {
+    // @ts-ignore
+    constructor(totalBytes, chunkSize) {
+        this.aggregate = new Sha256Incremental();
+        this.totalBytes = Number(totalBytes) || 0;
+        this.chunkSize = Number(chunkSize) || TAMANHO_CHUNK;
+        const prefix = new TextEncoder().encode(`PhysicalCloud:SHA256-CHUNK-V1:${this.totalBytes}:${this.chunkSize}:`);
+        this.aggregate.update(prefix);
+    }
+    // @ts-ignore
+    async update(chunk) {
+        const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+        const digest = await crypto.subtle.digest("SHA-256", bytes);
+        this.aggregate.update(new Uint8Array(digest));
+    }
+    digest() { return this.aggregate.digest(); }
 }
 
 // ─── Aguardando aceites ───
@@ -419,6 +632,24 @@ function processarFila(sessaoId) {
     if (proximo) enviarArquivo(sessaoId, proximo).catch(e => console.error("Erro em enviarArquivo:", e));
 }
 
+// @ts-ignore
+async function aguardarHashChunkDoPeer(sessaoId, limiteMs = 3000) {
+    const inicio = Date.now();
+    while (!peersSuportamChunkHash.has(sessaoId) && Date.now() - inicio < limiteMs) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return peersSuportamChunkHash.has(sessaoId);
+}
+
+// @ts-ignore
+async function aguardarTamanhoDesconhecidoDoPeer(sessaoId, limiteMs = 3000) {
+    const inicio = Date.now();
+    while (!peersSuportamTamanhoDesconhecido.has(sessaoId) && Date.now() - inicio < limiteMs) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return peersSuportamTamanhoDesconhecido.has(sessaoId);
+}
+
 /**
  * @param {string} sessaoId
  * @param {{ file: File, operacaoId: string, caminhoRelativo: string }} item
@@ -431,6 +662,27 @@ async function enviarArquivo(sessaoId, item) {
         return;
     }
 
+    // @ts-ignore
+    const tamanhoConhecido = item.file.sizeKnown !== false &&
+        Number.isSafeInteger(item.file.size) && item.file.size >= 0;
+    if (!tamanhoConhecido && !peersSuportamTamanhoDesconhecido.has(sessaoId)) {
+        await aguardarTamanhoDesconhecidoDoPeer(sessaoId);
+        if (!peersSuportamTamanhoDesconhecido.has(sessaoId)) {
+            op.arquivosComErro++;
+            emitir("physicalcloud:transfer-erro", {
+                sessaoId, operacaoId: op.operacaoId, nome: item.file.name,
+                motivo: "O outro dispositivo não oferece suporte a arquivos cujo tamanho é desconhecido. Atualize os dois dispositivos."
+            });
+            processarFila(sessaoId);
+            return;
+        }
+    }
+
+    // Dá tempo para o peer anunciar o protocolo rápido antes de decidir o hash.
+    if (tamanhoConhecido && item.file.size > 128 * 1024 * 1024 && !peersSuportamChunkHash.has(sessaoId)) {
+        await aguardarHashChunkDoPeer(sessaoId);
+    }
+
     let reader = null;
     try { reader = item.file.stream().getReader(); }
     catch {
@@ -440,13 +692,29 @@ async function enviarArquivo(sessaoId, item) {
         return;
     }
 
+    // Arquivos sem tamanho conhecido usam hash incremental sobre o fluxo bruto.
+    const hashAlgorithm = tamanhoConhecido && peersSuportamChunkHash.has(sessaoId)
+        ? "sha256-chunk-v1" : "sha256-raw-v1";
+    const LIMITE_COMPATIBILIDADE_LEGADA = 128 * 1024 * 1024;
+    if (hashAlgorithm === "sha256-raw-v1" && tamanhoConhecido && item.file.size > LIMITE_COMPATIBILIDADE_LEGADA) {
+        try { reader.releaseLock(); } catch {}
+        op.arquivosComErro++;
+        emitir("physicalcloud:transfer-erro", { sessaoId, operacaoId: op.operacaoId, nome: item.file.name, motivo: "Para transferir arquivos acima de 128 MB, atualize os dois dispositivos para a versão mais recente do Physical Cloud." });
+        processarFila(sessaoId);
+        return;
+    }
+
     const transferId = gerarTransferId();
     const entrada = {
         transferId, sessaoId, operacaoId: op.operacaoId,
-        nome: item.file.name, tamanho: item.file.size,
+        nome: item.file.name, tamanho: tamanhoConhecido ? item.file.size : -1,
+        tamanhoDesconhecido: !tamanhoConhecido,
         tipo: item.file.type || "application/octet-stream",
         caminhoRelativo: item.caminhoRelativo,
-        enviados: 0, estado: "enviando",
+        enviados: 0, bytesConfirmados: 0, ackResolver: /** @type {(() => void) | null} */ (null),
+        ackEnabled: false, estado: "enviando",
+        // @ts-ignore
+        tamanhoDesconhecido: !tamanhoConhecido,
         cancelarPausa: /** @type {(() => void) | null} */ (null),
         cancelamentoEmitido: false,
     };
@@ -457,7 +725,11 @@ async function enviarArquivo(sessaoId, item) {
         dc.send(JSON.stringify({
             type: "file-offer", transferId, operacaoId: op.operacaoId,
             nome: item.file.name, caminhoRelativo: item.caminhoRelativo,
-            tamanho: item.file.size, tipo: entrada.tipo,
+            tamanho: tamanhoConhecido ? item.file.size : -1,
+            unknownSize: !tamanhoConhecido,
+            tipo: entrada.tipo,
+            hashAlgorithm, hashChunkSize: TAMANHO_CHUNK,
+            ackWindow: true,
         }));
     } catch {
         try { reader.releaseLock(); } catch {}
@@ -469,7 +741,8 @@ async function enviarArquivo(sessaoId, item) {
 
     emitir("physicalcloud:transfer-inicio", {
         transferId, sessaoId, operacaoId: op.operacaoId,
-        nome: item.file.name, tamanho: item.file.size,
+        nome: item.file.name, tamanho: tamanhoConhecido ? item.file.size : 0,
+        tamanhoDesconhecido: !tamanhoConhecido,
         caminhoRelativo: item.caminhoRelativo, direcao: "envio",
     });
 
@@ -496,35 +769,55 @@ async function enviarArquivo(sessaoId, item) {
     }
 
     dc.bufferedAmountLowThreshold = BUFFER_BAIXO;
+    const hasherEnvio = hashAlgorithm === "sha256-chunk-v1"
+        ? new Sha256ChunkIntegrity(item.file.size, TAMANHO_CHUNK)
+        : new Sha256Incremental();
+    const MAX_IN_FLIGHT_BYTES = 4 * 1024 * 1024;
     let pausado = false;
     /** @type {((value?: any) => void) | null} */ let resolverPausa = null;
     const liberarPausa = () => {
         if (pausado && resolverPausa) { const r = resolverPausa; pausado = false; resolverPausa = null; r(); }
     };
     const onBufferLow = () => liberarPausa();
-    const onClose = () => liberarPausa();
+    const onClose = () => {
+        liberarPausa();
+        if (entrada.ackResolver) { const r = entrada.ackResolver; entrada.ackResolver = null; r(); }
+    };
     dc.addEventListener("bufferedamountlow", onBufferLow);
     dc.addEventListener("close", onClose);
     entrada.cancelarPausa = liberarPausa;
 
     try {
         while (true) {
-            if (entrada.estado === "cancelado") break;
+            if (entrada.estado !== "enviando") break;
             const { done, value } = await reader.read();
             if (done) break;
             if (!value) continue;
             let offset = 0;
             while (offset < value.byteLength) {
-                if (entrada.estado === "cancelado") break;
+                if (entrada.estado !== "enviando") break;
                 if (dc.readyState !== "open") { entrada.estado = "cancelado"; break; }
                 const fim = Math.min(offset + TAMANHO_CHUNK, value.byteLength);
                 const fatia = new Uint8Array(fim - offset);
                 fatia.set(new Uint8Array(value.buffer, value.byteOffset + offset, fim - offset));
+                // Janela de recepção: não deixa o remetente ultrapassar 4 MB
+                // ainda não confirmados pelo gravador do dispositivo receptor.
+                while (entrada.ackEnabled && entrada.enviados - entrada.bytesConfirmados >= MAX_IN_FLIGHT_BYTES) {
+                    if (entrada.estado !== "enviando" || dc.readyState !== "open") {
+                        if (entrada.estado === "enviando") entrada.estado = "cancelado";
+                        break;
+                    }
+                    // @ts-ignore
+                    await new Promise(resolve => { entrada.ackResolver = resolve; });
+                }
+                if (entrada.estado !== "enviando") break;
                 try { dc.send(fatia); } catch { entrada.estado = "cancelado"; break; }
+                await hasherEnvio.update(fatia);
                 entrada.enviados += fatia.byteLength;
                 emitir("physicalcloud:transfer-progresso", {
                     transferId, sessaoId, operacaoId: op.operacaoId,
-                    enviados: entrada.enviados, total: item.file.size, timestamp: Date.now(),
+                    enviados: entrada.enviados, total: tamanhoConhecido ? item.file.size : 0,
+                    tamanhoDesconhecido: !tamanhoConhecido, timestamp: Date.now(),
                 });
                 if (dc.bufferedAmount > BUFFER_ALTO) {
                     pausado = true;
@@ -533,6 +826,15 @@ async function enviarArquivo(sessaoId, item) {
                 offset = fim;
             }
         }
+    } catch (e) {
+        entrada.estado = "erro";
+        try { if (dc.readyState === "open") dc.send(JSON.stringify({ type: "file-cancel", transferId })); } catch {}
+        limparSeProprio(sessaoId, transferId);
+        op.arquivosComErro++;
+        // @ts-ignore
+        emitir("physicalcloud:transfer-erro", { transferId, sessaoId, operacaoId: op.operacaoId, motivo: e?.message || "Falha ao calcular a integridade do arquivo." });
+        processarFila(sessaoId);
+        return;
     } finally {
         try { reader.releaseLock(); } catch {}
         dc.removeEventListener("bufferedamountlow", onBufferLow);
@@ -546,9 +848,11 @@ async function enviarArquivo(sessaoId, item) {
         processarFila(sessaoId);
         return;
     }
+    if (entrada.estado !== "enviando") return; // erro remoto já foi tratado pelo evento file-error
+    if (entrada.tamanhoDesconhecido) entrada.tamanho = entrada.enviados;
 
     let sha256;
-    try { sha256 = await calcularSha256(await item.file.arrayBuffer()); }
+    try { sha256 = hasherEnvio.digest(); }
     catch {
         entrada.estado = "erro";
         try { if (dc.readyState === "open") dc.send(JSON.stringify({ type: "file-cancel", transferId })); } catch {}
@@ -559,6 +863,7 @@ async function enviarArquivo(sessaoId, item) {
         return;
     }
 
+    // @ts-ignore
     if (entrada.estado === "cancelado") {
         limparSeProprio(sessaoId, transferId);
         emitirCancelamento(entrada, sessaoId);
@@ -567,7 +872,7 @@ async function enviarArquivo(sessaoId, item) {
     }
 
     try {
-        dc.send(JSON.stringify({ type: "file-done", transferId, sha256 }));
+        dc.send(JSON.stringify({ type: "file-done", transferId, sha256, bytes: entrada.enviados }));
         armarTimeoutOk(transferId, sessaoId);
     } catch {
         limparSeProprio(sessaoId, transferId);
@@ -620,12 +925,19 @@ function tratarFileOffer(sessaoId, msg, dc) {
     const { transferId, operacaoId, nome, caminhoRelativo, tamanho, tipo } = msg;
     if (typeof transferId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(transferId)) return;
     if (typeof nome !== "string" || nome.length === 0 || nome.length > 255) return;
-    if (typeof tamanho !== "number" || !Number.isFinite(tamanho) || tamanho < 0) return;
+    const tamanhoDesconhecido = tamanho === -1 && msg.unknownSize === true && msg.hashAlgorithm === "sha256-raw-v1";
+    if (!Number.isSafeInteger(tamanho) || (tamanho < 0 && !tamanhoDesconhecido) || tamanho > Number.MAX_SAFE_INTEGER) {
+        try { dc.send(JSON.stringify({ type: "file-error", transferId, motivo: "Tamanho anunciado inválido." })); } catch {}
+        return;
+    }
     const tipoSeguro = (typeof tipo === "string" && /^[\w.+-]+\/[\w.+-]+$/.test(tipo)) ? tipo : "application/octet-stream";
+    const hashAlgorithm = msg.hashAlgorithm === "sha256-chunk-v1" ? "sha256-chunk-v1" : "sha256-raw-v1";
+    const hashChunkSize = Number.isInteger(msg.hashChunkSize) && msg.hashChunkSize >= 64 * 1024 && msg.hashChunkSize <= 1024 * 1024
+        ? msg.hashChunkSize : TAMANHO_CHUNK;
 
     if (!operacaoId || !ofertasOperacoes.has(operacaoId)) {
         if (!operacaoId) return;
-        tratarOperationStart(sessaoId, { operacaoId, totalArquivos: 1, totalBytes: tamanho }, dc);
+        tratarOperationStart(sessaoId, { operacaoId, totalArquivos: 1, totalBytes: tamanhoDesconhecido ? 0 : tamanho }, dc);
     }
     const op = ofertasOperacoes.get(operacaoId);
     if (!op) return;
@@ -637,14 +949,15 @@ function tratarFileOffer(sessaoId, msg, dc) {
         ofertasPendentes.set(transferId, {
             transferId, operacaoId, sessaoId, nome,
             caminhoRelativo: typeof caminhoRelativo === "string" ? caminhoRelativo : nome,
-            tamanho, tipo: tipoSeguro, dc,
+            tamanho, tamanhoDesconhecido, tipo: tipoSeguro, hashAlgorithm, hashChunkSize, ackWindow: msg.ackWindow === true, dc,
         });
         return;
     }
     aceitarArquivoInterno({
         transferId, operacaoId, sessaoId, nome,
         caminhoRelativo: typeof caminhoRelativo === "string" ? caminhoRelativo : nome,
-        tamanho, tipo: tipoSeguro, dc,
+        // @ts-ignore
+        tamanho, tamanhoDesconhecido, tipo: tipoSeguro, hashAlgorithm, hashChunkSize, ackWindow: msg.ackWindow === true, dc,
     });
 }
 
@@ -652,11 +965,56 @@ function tratarFileOffer(sessaoId, msg, dc) {
 
 // ═══ INÍCIO DA PARTE 3/3 ═══
 
+/** Abre um destino nativo em Downloads com escrita incremental (Android/Electron). */
+// @ts-ignore
+async function criarWriterNativoDownloads(nome, tipo, caminhoRelativo) {
+    const bridge = /** @type {any} */ (window).AndroidBridge;
+    if (!bridge || typeof bridge.startDownloadWrite !== "function") return null;
+    // @ts-ignore
+    const parse = value => typeof value === "string" ? JSON.parse(value) : value;
+    const partes = String(caminhoRelativo || nome).split(/[\\/]/).filter(Boolean);
+    partes.pop(); // o nome do arquivo é passado separadamente
+    const pastaRelativa = partes.join("/");
+    const inicio = parse(await bridge.startDownloadWrite(nome, tipo || "application/octet-stream", pastaRelativa));
+    if (!inicio || !inicio.success) throw new Error(inicio?.error || "Não foi possível criar o arquivo em Downloads.");
+    const chave = inicio.streamKey || inicio.handle || inicio.fileUri;
+    if (!chave) throw new Error("O armazenamento nativo não retornou um identificador de gravação.");
+    let finalizado = false;
+    return {
+        // @ts-ignore
+        async write(chunk) {
+            const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+            let binary = "";
+            for (let i = 0; i < bytes.length; i += 8192) {
+                binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + 8192, bytes.length)));
+            }
+            const resposta = parse(await bridge.appendChunk(chave, btoa(binary)));
+            if (!resposta || !resposta.success) throw new Error(resposta?.error || "Falha ao gravar bloco em Downloads.");
+        },
+        async close() {
+            const resposta = parse(await bridge.finishFileWrite(chave));
+            if (!resposta || !resposta.success) throw new Error(resposta?.error || "Falha ao finalizar arquivo em Downloads.");
+            finalizado = true;
+        },
+        async abort() {
+            if (finalizado) return;
+            if (typeof bridge.abortFileWrite === "function") await bridge.abortFileWrite(chave);
+            else await bridge.finishFileWrite(chave);
+            finalizado = true;
+        }
+    };
+}
+
 /**
  * @param {{ transferId: string, operacaoId: string, sessaoId: string, nome: string, caminhoRelativo: string, tamanho: number, tipo: string, dc: RTCDataChannel }} oferta
  */
 async function aceitarArquivoInterno(oferta) {
     const op = ofertasOperacoes.get(oferta.operacaoId);
+    // @ts-ignore
+    if (oferta.hashAlgorithm !== "sha256-chunk-v1" && !oferta.tamanhoDesconhecido && oferta.tamanho > 128 * 1024 * 1024) {
+        try { oferta.dc.send(JSON.stringify({ type: "file-error", transferId: oferta.transferId, motivo: "O remetente está usando uma versão antiga. Atualize os dois dispositivos para transferir arquivos acima de 128 MB." })); } catch {}
+        return;
+    }
     if (!op || op.recusada) {
         try { oferta.dc.send(JSON.stringify({ type: "file-error", transferId: oferta.transferId, motivo: "Operação recusada." })); } catch {}
         return;
@@ -665,8 +1023,16 @@ async function aceitarArquivoInterno(oferta) {
     const rec = {
         transferId: oferta.transferId, operacaoId: oferta.operacaoId, sessaoId: oferta.sessaoId,
         nome: oferta.nome, caminhoRelativo: oferta.caminhoRelativo,
-        tamanho: oferta.tamanho, tipo: oferta.tipo,
+        // @ts-ignore
+        tamanho: oferta.tamanho, tamanhoDesconhecido: oferta.tamanhoDesconhecido === true, tipo: oferta.tipo,
         chunks: /** @type {ArrayBuffer[]} */ ([]), recebidos: 0,
+        // @ts-ignore
+        hasher: oferta.hashAlgorithm === "sha256-chunk-v1"
+            // @ts-ignore
+            ? new Sha256ChunkIntegrity(oferta.tamanho, oferta.hashChunkSize)
+            : new Sha256Incremental(),
+        // @ts-ignore
+        ultimoAck: 0, ackWindow: oferta.ackWindow === true,
         writerHandle: /** @type {FileSystemWritableFileStream | null} */ (null),
         fileHandle: /** @type {FileSystemFileHandle | null} */ (null),
         modo: "blob",
@@ -681,26 +1047,62 @@ async function aceitarArquivoInterno(oferta) {
                 dir = await dir.getDirectoryHandle(partes[i], { create: true });
             }
             const nomeFinal = partes[partes.length - 1] || oferta.nome;
-            const fh = await dir.getFileHandle(nomeFinal, { create: true });
-            rec.writerHandle = await fh.createWritable();
-            rec.fileHandle = fh;
-            rec.modo = "diretorio";
+            let destinoCriado = null;
+            try {
+                destinoCriado = await obterHandleDestinoSemSobrescrever(dir, nomeFinal);
+                rec.writerHandle = await destinoCriado.handle.createWritable();
+                rec.fileHandle = destinoCriado.handle;
+                rec.nome = destinoCriado.nome;
+                // @ts-ignore
+                rec.liberarNomeDestino = destinoCriado.liberar;
+                rec.modo = "diretorio";
+                if (destinoCriado.nome !== nomeFinal) {
+                    emitir("physicalcloud:aviso", { mensagem: `Já existia um arquivo chamado ${nomeFinal}. O arquivo recebido será salvo como ${destinoCriado.nome}.` });
+                }
+            } catch (erro) {
+                // @ts-ignore
+                const removido = await descartarDestinoCriadoAposFalha(dir, destinoCriado, rec.writerHandle);
+                rec.writerHandle = null;
+                if (!removido && destinoCriado) emitir("physicalcloud:aviso", { mensagem: `Não foi possível remover o arquivo vazio ${destinoCriado.nome}. Verifique a pasta de destino.` });
+                throw erro;
+            }
         } catch (e) {
             console.error("Falha ao preparar arquivo de destino, caindo para blob:", e);
             rec.writerHandle = null; rec.fileHandle = null; rec.modo = "blob";
         }
     }
 
+    // Em Android/Desktop, inclusive no auto-pull, usa Downloads nativo em stream.
+    // Isso evita transformar um arquivo de vários GB em Base64/Blob na memória.
+    if (!rec.writerHandle && typeof /** @type {any} */ (window).AndroidBridge?.startDownloadWrite === "function") {
+        try {
+            rec.writerHandle = /** @type {any} */ (await criarWriterNativoDownloads(oferta.nome, oferta.tipo, oferta.caminhoRelativo));
+            if (rec.writerHandle) rec.modo = "native-download";
+        } catch (e) {
+            console.warn("Não foi possível abrir gravação nativa em Downloads:", e);
+        }
+    }
+
+    // Sem um destino de disco em stream, arquivos grandes não podem cair no Blob:
+    // isso poderia esgotar a memória do celular ou do navegador.
+    if (!rec.writerHandle && !rec.tamanhoDesconhecido && oferta.tamanho > LIMITE_FALLBACK_RAM) {
+        try { oferta.dc.send(JSON.stringify({ type: "file-error", transferId: oferta.transferId, motivo: "Este dispositivo precisa de uma pasta de destino para receber arquivos acima de 128 MB. Escolha uma pasta com espaço disponível e tente novamente." })); } catch {}
+        return;
+    }
+
     const anterior = recebimentos.get(oferta.sessaoId);
     if (anterior && anterior.transferId !== oferta.transferId && anterior.writerHandle) {
         try { await anterior.writerHandle.abort(); } catch {}
+        liberarReservaDestino(anterior);
     }
     recebimentos.set(oferta.sessaoId, rec);
     ativasRecebimento.set(oferta.sessaoId, oferta.transferId);
 
     try {
-        oferta.dc.send(JSON.stringify({ type: "file-accept", transferId: oferta.transferId }));
+        oferta.dc.send(JSON.stringify({ type: "file-accept", transferId: oferta.transferId, ackWindow: rec.ackWindow }));
     } catch {
+        liberarReservaDestino(rec);
+        if (rec.writerHandle) { try { await rec.writerHandle.abort(); } catch {} }
         recebimentos.delete(oferta.sessaoId);
         ativasRecebimento.delete(oferta.sessaoId);
         return;
@@ -708,7 +1110,10 @@ async function aceitarArquivoInterno(oferta) {
 
     emitir("physicalcloud:transfer-inicio", {
         transferId: oferta.transferId, sessaoId: oferta.sessaoId, operacaoId: oferta.operacaoId,
-        nome: oferta.nome, tamanho: oferta.tamanho,
+        // @ts-ignore
+        nome: oferta.nome, tamanho: oferta.tamanhoDesconhecido ? 0 : oferta.tamanho,
+        // @ts-ignore
+        tamanhoDesconhecido: oferta.tamanhoDesconhecido === true,
         caminhoRelativo: oferta.caminhoRelativo, direcao: "recebimento",
     });
 }
@@ -717,12 +1122,34 @@ async function aceitarArquivoInterno(oferta) {
 async function tratarChunk(sessaoId, data, dc) {
     const rec = recebimentos.get(sessaoId);
     if (!rec) return;
+    const bytesDoBloco = data && Number.isSafeInteger(data.byteLength) ? data.byteLength : -1;
+    // O protocolo atual usa blocos de 256 KiB; tolera até 1 MiB para peers
+    // compatíveis, mas nunca aceita bloco vazio/malformado ou acima do limite.
+    const limiteRecebimento = rec.tamanhoDesconhecido
+        ? (rec.writerHandle ? LIMITE_ARQUIVO_TAMANHO_DESCONHECIDO : LIMITE_FALLBACK_RAM)
+        : rec.tamanho;
+    if (bytesDoBloco <= 0 || bytesDoBloco > 1024 * 1024 || rec.recebidos + bytesDoBloco > limiteRecebimento) {
+        const motivo = rec.recebidos + Math.max(0, bytesDoBloco) > limiteRecebimento
+            ? (rec.tamanhoDesconhecido && !rec.writerHandle
+                ? "Arquivo sem tamanho informado excedeu o limite de 128 MB para recebimento em memória. Escolha uma pasta de destino e tente novamente."
+                : "O remetente excedeu o limite de tamanho do arquivo.")
+            : "Bloco recebido inválido ou acima do limite.";
+        try { if (dc.readyState === "open") dc.send(JSON.stringify({ type: "file-error", transferId: rec.transferId, motivo })); } catch {}
+        try { if (rec.writerHandle) await rec.writerHandle.abort(); } catch {}
+        liberarReservaDestino(rec);
+        recebimentos.delete(sessaoId);
+        ativasRecebimento.delete(sessaoId);
+        try { if (dc.readyState === "open") dc.send(JSON.stringify({ type: "file-cancel", transferId: rec.transferId })); } catch {}
+        emitir("physicalcloud:transfer-erro", { sessaoId, transferId: rec.transferId, operacaoId: rec.operacaoId, motivo });
+        return;
+    }
     if (rec.writerHandle) {
         try { await rec.writerHandle.write(data); }
         catch {
             if (recebimentos.get(sessaoId) !== rec) return;
             try { if (dc.readyState === "open") dc.send(JSON.stringify({ type: "file-error", transferId: rec.transferId, motivo: "Erro ao escrever no disco." })); } catch {}
             try { await rec.writerHandle.abort(); } catch {}
+            liberarReservaDestino(rec);
             recebimentos.delete(sessaoId);
             ativasRecebimento.delete(sessaoId);
             emitir("physicalcloud:transfer-erro", { sessaoId, transferId: rec.transferId, operacaoId: rec.operacaoId, motivo: "Erro ao escrever no disco." });
@@ -731,10 +1158,25 @@ async function tratarChunk(sessaoId, data, dc) {
     } else {
         rec.chunks.push(data);
     }
+    try { await rec.hasher.update(new Uint8Array(data)); }
+    catch (e) {
+        try { dc.send(JSON.stringify({ type: "file-error", transferId: rec.transferId, motivo: "Falha ao calcular a integridade do bloco recebido." })); } catch {}
+        if (rec.writerHandle) { try { await rec.writerHandle.abort(); } catch {} }
+        liberarReservaDestino(rec);
+        recebimentos.delete(sessaoId); ativasRecebimento.delete(sessaoId);
+        // @ts-ignore
+        emitir("physicalcloud:transfer-erro", { sessaoId, transferId: rec.transferId, operacaoId: rec.operacaoId, motivo: e?.message || "Falha ao calcular a integridade do bloco." });
+        return;
+    }
     rec.recebidos += data.byteLength;
+    if (rec.ackWindow && rec.recebidos - rec.ultimoAck >= 1024 * 1024) {
+        rec.ultimoAck = rec.recebidos;
+        try { if (dc.readyState === "open") dc.send(JSON.stringify({ type: "file-ack", transferId: rec.transferId, bytes: rec.recebidos })); } catch {}
+    }
     emitir("physicalcloud:transfer-progresso", {
         transferId: rec.transferId, sessaoId, operacaoId: rec.operacaoId,
-        enviados: rec.recebidos, total: rec.tamanho, timestamp: Date.now(),
+        enviados: rec.recebidos, total: rec.tamanhoDesconhecido ? 0 : rec.tamanho,
+        tamanhoDesconhecido: rec.tamanhoDesconhecido, timestamp: Date.now(),
     });
 }
 
@@ -744,37 +1186,54 @@ async function tratarFileDone(sessaoId, msg, dc) {
     if (!rec || rec.transferId !== msg.transferId) return;
     const sha256Remoto = msg.sha256;
 
-    if (rec.recebidos !== rec.tamanho) {
+    const tamanhoFinalValidado = rec.tamanhoDesconhecido
+        ? (Number.isSafeInteger(msg.bytes) && msg.bytes === rec.recebidos)
+        : rec.recebidos === rec.tamanho;
+    if (!tamanhoFinalValidado) {
         try { dc.send(JSON.stringify({ type: "file-error", transferId: rec.transferId, motivo: "Tamanho do arquivo não confere." })); } catch {}
         if (rec.writerHandle) { try { await rec.writerHandle.abort(); } catch {} }
+        liberarReservaDestino(rec);
         recebimentos.delete(sessaoId);
         ativasRecebimento.delete(sessaoId);
         emitir("physicalcloud:transfer-erro", { sessaoId, transferId: rec.transferId, operacaoId: rec.operacaoId, motivo: "Arquivo incompleto." });
         return;
     }
 
+    if (rec.tamanhoDesconhecido) rec.tamanho = rec.recebidos;
+
+    // O hash é calculado sobre os mesmos bytes que foram gravados, sem reler
+    // o arquivo completo do armazenamento (o que causava consumo de RAM).
+    let hashRecebido;
+    try { hashRecebido = rec.hasher.digest(); }
+    catch {
+        try { dc.send(JSON.stringify({ type: "file-error", transferId: rec.transferId, motivo: "Não foi possível verificar a integridade do arquivo." })); } catch {}
+        if (rec.writerHandle) { try { await rec.writerHandle.abort(); } catch {} }
+        liberarReservaDestino(rec);
+        recebimentos.delete(sessaoId); ativasRecebimento.delete(sessaoId);
+        emitir("physicalcloud:transfer-erro", { sessaoId, transferId: rec.transferId, operacaoId: rec.operacaoId, motivo: "Falha na verificação de integridade." });
+        return;
+    }
+    if (hashRecebido !== sha256Remoto) {
+        try { dc.send(JSON.stringify({ type: "file-error", transferId: rec.transferId, motivo: "Falha de integridade SHA-256." })); } catch {}
+        if (rec.writerHandle) { try { await rec.writerHandle.abort(); } catch {} }
+        liberarReservaDestino(rec);
+        recebimentos.delete(sessaoId); ativasRecebimento.delete(sessaoId);
+        emitir("physicalcloud:transfer-erro", { sessaoId, transferId: rec.transferId, operacaoId: rec.operacaoId, motivo: "Arquivo corrompido." });
+        return;
+    }
+
     if (rec.writerHandle) {
         try { await rec.writerHandle.close(); }
         catch {
+            try { await rec.writerHandle.abort(); } catch {}
             try { dc.send(JSON.stringify({ type: "file-error", transferId: rec.transferId, motivo: "Falha ao salvar arquivo." })); } catch {}
+            liberarReservaDestino(rec);
             recebimentos.delete(sessaoId);
             ativasRecebimento.delete(sessaoId);
             emitir("physicalcloud:transfer-erro", { sessaoId, transferId: rec.transferId, operacaoId: rec.operacaoId, motivo: "Falha ao salvar arquivo." });
             return;
         }
-        if (rec.fileHandle) {
-            try {
-                const f = await rec.fileHandle.getFile();
-                const buf = await f.arrayBuffer();
-                if (await calcularSha256(buf) !== sha256Remoto) {
-                    try { dc.send(JSON.stringify({ type: "file-error", transferId: rec.transferId, motivo: "Falha de integridade SHA-256." })); } catch {}
-                    recebimentos.delete(sessaoId);
-                    ativasRecebimento.delete(sessaoId);
-                    emitir("physicalcloud:transfer-erro", { sessaoId, transferId: rec.transferId, operacaoId: rec.operacaoId, motivo: "Arquivo corrompido." });
-                    return;
-                }
-            } catch { /* handle sem releitura */ }
-        }
+        liberarReservaDestino(rec);
         try { dc.send(JSON.stringify({ type: "file-ok", transferId: rec.transferId })); } catch {}
         recebimentos.delete(sessaoId);
         ativasRecebimento.delete(sessaoId);
@@ -787,22 +1246,18 @@ async function tratarFileDone(sessaoId, msg, dc) {
     }
 
     const blob = new Blob(rec.chunks, { type: rec.tipo || "application/octet-stream" });
-    const buf = await blob.arrayBuffer();
-    if (await calcularSha256(buf) !== sha256Remoto) {
-        try { dc.send(JSON.stringify({ type: "file-error", transferId: rec.transferId, motivo: "Falha de integridade SHA-256." })); } catch {}
-        recebimentos.delete(sessaoId);
-        ativasRecebimento.delete(sessaoId);
-        emitir("physicalcloud:transfer-erro", { sessaoId, transferId: rec.transferId, operacaoId: rec.operacaoId, motivo: "Arquivo corrompido." });
-        return;
-    }
-        // Bloco D / Bug #1: download neutro (sem mencionar gerenciador ou pasta).
+    // Bloco D / Bug #1: download neutro (sem mencionar gerenciador ou pasta).
     // Tratamos dois casos de falha:
     //  - Navegador sem suporte a <a download> → avisa o usuário
     //  - createObjectURL ou clique falha → cancela o arquivo corretamente
     // O gerenciador usado é decisão do sistema operacional, não do site.
     let downloadOk = false;
+    /**
+     * @type {string | null}
+     */
+    let url = null;
     try {
-        const url = URL.createObjectURL(blob);
+        url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
         a.rel = "noopener";
@@ -812,11 +1267,13 @@ async function tratarFileDone(sessaoId, msg, dc) {
         } else {
             // Sem suporte, o clique abre o arquivo na aba — não é o comportamento
             // esperado para "salvar". Avisa o usuário em vez de disparar.
-            emitir("physicalcloud:download-falhou", {
-                transferId: rec.transferId, sessaoId, nome: rec.nome,
-                motivo: "O navegador não suporta salvar arquivos diretamente. Abra em um navegador atualizado.",
-            });
+            const motivo = "O navegador não suporta salvar arquivos diretamente. Abra em um navegador atualizado.";
+            emitir("physicalcloud:download-falhou", { transferId: rec.transferId, sessaoId, nome: rec.nome, motivo });
             URL.revokeObjectURL(url);
+            url = null;
+            try { dc.send(JSON.stringify({ type: "file-error", transferId: rec.transferId, motivo })); } catch {}
+            limparRecebimentoSemArquivo(sessaoId, rec);
+            emitir("physicalcloud:transfer-erro", { sessaoId, transferId: rec.transferId, operacaoId: rec.operacaoId, motivo });
             return;
         }
         document.body.appendChild(a);
@@ -824,9 +1281,10 @@ async function tratarFileDone(sessaoId, msg, dc) {
         downloadOk = true;
         setTimeout(() => {
             try { document.body.removeChild(a); } catch {}
-            try { URL.revokeObjectURL(url); } catch {}
+            try { if (url) URL.revokeObjectURL(url); } catch {}
         }, 5000);
     } catch (e) {
+        if (url) { try { URL.revokeObjectURL(url); } catch {} }
         console.warn("Falha ao disparar download do blob:", e);
         emitir("physicalcloud:download-falhou", {
             transferId: rec.transferId, sessaoId, nome: rec.nome,
@@ -837,8 +1295,8 @@ async function tratarFileDone(sessaoId, msg, dc) {
     if (!downloadOk) {
         // Não envia file-ok — o emissor deve saber que o arquivo não chegou ao disco
         try { dc.send(JSON.stringify({ type: "file-error", transferId: rec.transferId, motivo: "Falha ao salvar no dispositivo." })); } catch {}
-        recebimentos.delete(sessaoId);
-        ativasRecebimento.delete(sessaoId);
+        limparRecebimentoSemArquivo(sessaoId, rec);
+        emitir("physicalcloud:transfer-erro", { sessaoId, transferId: rec.transferId, operacaoId: rec.operacaoId, motivo: "Falha ao salvar no dispositivo." });
         return;
     }
 
@@ -913,6 +1371,7 @@ async function tratarMensagemJson(sessaoId, msg, dc) {
                         if (rec.writerHandle) {
                             try { await rec.writerHandle.abort(); } catch {}
                         }
+                        liberarReservaDestino(rec);
                         recebimentos.delete(sid);
                         ativasRecebimento.delete(sid);
                         emitir("physicalcloud:transfer-cancelado", { transferId: rec.transferId, sessaoId: sid });
@@ -938,7 +1397,25 @@ async function tratarMensagemJson(sessaoId, msg, dc) {
             tratarFileOffer(sessaoId, msg, dc);
             break;
 
+        case "transfer-capabilities": {
+            if (msg.integrityVersion >= 2) peersSuportamChunkHash.add(sessaoId);
+            if (msg.unknownSize === true) peersSuportamTamanhoDesconhecido.add(sessaoId);
+            break;
+        }
+
+        case "file-ack": {
+            const entrada = transferencias.get(msg.transferId);
+            if (entrada) {
+                const confirmado = Number(msg.bytes);
+                if (Number.isFinite(confirmado)) entrada.bytesConfirmados = Math.max(entrada.bytesConfirmados || 0, Math.min(entrada.enviados, confirmado));
+                if (entrada.ackResolver) { const resolver = entrada.ackResolver; entrada.ackResolver = null; resolver(); }
+            }
+            break;
+        }
+
         case "file-accept": {
+            const entradaEnvio = transferencias.get(msg.transferId);
+            if (entradaEnvio) entradaEnvio.ackEnabled = msg.ackWindow === true;
             const prom = aguardandoAceitacaoMap.get(msg.transferId);
             if (prom) { aguardandoAceitacaoMap.delete(msg.transferId); prom.resolve(undefined); }
             break
@@ -952,6 +1429,7 @@ async function tratarMensagemJson(sessaoId, msg, dc) {
             const rec = recebimentos.get(sessaoId);
             if (rec && rec.transferId === msg.transferId) {
                 if (rec.writerHandle) { try { await rec.writerHandle.abort(); } catch {} }
+                liberarReservaDestino(rec);
                 recebimentos.delete(sessaoId);
                 ativasRecebimento.delete(sessaoId);
                 emitir("physicalcloud:transfer-cancelado", { transferId: rec.transferId, sessaoId });
@@ -962,6 +1440,7 @@ async function tratarMensagemJson(sessaoId, msg, dc) {
                 if (e) {
                     e.estado = "cancelado";
                     if (e.cancelarPausa) e.cancelarPausa();
+                    if (e.ackResolver) { const resolver = e.ackResolver; e.ackResolver = null; resolver(); }
                     emitirCancelamento(e, sessaoId);
                 }
                 rejeitarAceitacaoPendente(msg.transferId, "Cancelado pelo peer.", "cancel");
@@ -1023,6 +1502,8 @@ async function tratarMensagemJson(sessaoId, msg, dc) {
             if (!entrada) break;
             const op = operacoes.get(entrada.operacaoId);
             entrada.estado = "erro";
+            if (entrada.cancelarPausa) entrada.cancelarPausa();
+            if (entrada.ackResolver) { const resolver = entrada.ackResolver; entrada.ackResolver = null; resolver(); }
             cancelarTimeoutOk(tid);
             limparSeProprio(sessaoId, tid);
             if (op) op.arquivosComErro++;
@@ -1130,13 +1611,16 @@ window.addEventListener("physicalcloud:canal-aberto", (event) => {
         processar();
     }
 
+    try { if (dc.readyState === "open") dc.send(JSON.stringify({ type: "transfer-capabilities", integrityVersion: 2, protocolVersion: 3, unknownSize: true })); } catch {}
+
     dc.addEventListener("message", (/** @type {MessageEvent} */ ev) => {
         if (typeof ev.data === "string") {
             let msg;
             try { msg = JSON.parse(ev.data); } catch { msg = null; }
             if (msg && typeof msg.type === "string") {
                 if (msg.type.startsWith("file-") || msg.type.startsWith("dir-") ||
-                    msg.type.startsWith("operation-") || msg.type.startsWith("share-")) {
+                    msg.type.startsWith("operation-") || msg.type.startsWith("share-") ||
+                    msg.type === "transfer-capabilities") {
                     enfileirar(() => tratarMensagemJson(sessaoId, msg, dc));
                 }
             }
@@ -1151,6 +1635,8 @@ window.addEventListener("physicalcloud:canal-aberto", (event) => {
 window.addEventListener("physicalcloud:sessao-encerrada", (event) => {
     const { sessaoId } = /** @type {CustomEvent} */ (event).detail;
     canais.delete(sessaoId);
+    peersSuportamChunkHash.delete(sessaoId);
+    peersSuportamTamanhoDesconhecido.delete(sessaoId);
     filas.delete(sessaoId);
     pastasCompartilhadas.delete(sessaoId);
     limparPullsAguardando(sessaoId);
@@ -1197,6 +1683,7 @@ window.addEventListener("physicalcloud:sessao-encerrada", (event) => {
     if (tidRec) {
         const rec = recebimentos.get(sessaoId);
         if (rec && rec.writerHandle) rec.writerHandle.abort().catch(() => {});
+        liberarReservaDestino(rec);
         recebimentos.delete(sessaoId);
         ativasRecebimento.delete(sessaoId);
         emitir("physicalcloud:transfer-cancelado", { transferId: tidRec, sessaoId });
@@ -1237,6 +1724,7 @@ window.addEventListener("physicalcloud:canal-fechado", (event) => {
         if (rec.writerHandle) {
             try { rec.writerHandle.abort(); } catch {}
         }
+        liberarReservaDestino(rec);
         recebimentos.delete(sid);
         ativasRecebimento.delete(sid);
         emitir("physicalcloud:transfer-cancelado", { transferId: rec.transferId, sessaoId: sid });
@@ -1603,6 +2091,7 @@ window.addEventListener("physicalcloud:solicitar-download-remoto", (event) => {
             for (const [sid, rec] of Array.from(recebimentos.entries())) {
                 if (rec.operacaoId === operacaoId) {
                     if (rec.writerHandle) rec.writerHandle.abort().catch(() => {});
+                    liberarReservaDestino(rec);
                     recebimentos.delete(sid);
                     ativasRecebimento.delete(sid);
                     emitir("physicalcloud:transfer-cancelado", { transferId: rec.transferId, sessaoId: sid });
@@ -1645,6 +2134,7 @@ window.addEventListener("physicalcloud:solicitar-download-remoto", (event) => {
             const rec = recebimentos.get(sessaoId);
             if (rec && rec.transferId === transferId) {
                 if (rec.writerHandle) rec.writerHandle.abort().catch(() => {});
+                liberarReservaDestino(rec);
                 recebimentos.delete(sessaoId);
             }
             ativasRecebimento.delete(sessaoId);
