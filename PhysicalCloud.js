@@ -40,9 +40,7 @@ let reconectando = false;
 // Credencial persistente emitida pelo servidor (32 bytes aleatórios, base64url).
 // O deviceId é público; somente este token comprova a posse da identidade.
 const AUTH_TOKEN_STORAGE_KEY = "physicalCloudDeviceAuthToken";
-/**
- * @type {string | null}
- */
+/** @type {string | null} */
 let authTokenMemoria = null;
 let identidadeAutenticada = false;
 let bloqueioIdentidade = false;
@@ -73,9 +71,7 @@ function verificarArmazenamentoAutenticacao() {
     }
 }
 
-/**
- * @param {string | null} token
- */
+/** @param {string} token */
 function salvarTokenAutenticacao(token) {
     if (typeof token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(token)) return false;
     try {

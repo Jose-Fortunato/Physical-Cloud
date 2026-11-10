@@ -20,7 +20,8 @@ const NOME_CANAL = "physicalcloud";
 const TIMEOUT_DESCONEXAO_MS = 2000;
 
 function obterIceServersConfigurados() {
-    const turnServers = Array.isArray(/** @type {any} */ (window).PhysicalCloudIceServers) ? /** @type {any} */ (window).PhysicalCloudIceServers : [];
+    // @ts-ignore
+    const turnServers = Array.isArray(window.PhysicalCloudIceServers) ? window.PhysicalCloudIceServers : [];
     const seguros = turnServers.filter((/** @type {{ urls: string | any[]; username: any; credential: any; }} */ item) => item &&
         (typeof item.urls === "string" || (Array.isArray(item.urls) && item.urls.length > 0)) &&
         typeof item.username === "string" && typeof item.credential === "string");
